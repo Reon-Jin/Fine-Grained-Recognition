@@ -37,7 +37,7 @@ def validate(model, loader, criterion, device):
 
 # 主训练脚本
 def main():
-    root = '/path/to/data'  # 根目录，包含 train/ 和 test/
+    root = 'data/WebFG-400'  # 根目录，包含 train/ 和 test/
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     train_set = get_train_dataset(root)
@@ -53,7 +53,7 @@ def main():
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)
 
     best_acc = 0
-    for epoch in range(1, 101):
+    for epoch in range(1, 2):
         train_loss = train_one_epoch(model, train_loader, criterion, optimizer, device)
         val_loss, val_acc = validate(model, val_loader, criterion, device)
         print(f'Epoch {epoch:03d} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}')
@@ -61,9 +61,9 @@ def main():
         # 保存最佳模型
         if val_acc > best_acc:
             best_acc = val_acc
-            torch.save(model.state_dict(), 'model.pth')
+            torch.save(model.state_dict(), 'model/model.pth')
     # 最终模型
-    torch.save(model.state_dict(), 'model_final.pth')
+    torch.save(model.state_dict(), 'model/model_final.pth')
 
 if __name__ == '__main__':
     main()
