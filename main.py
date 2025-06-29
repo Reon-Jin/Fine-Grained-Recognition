@@ -27,7 +27,7 @@ def save_results(ids, preds, class_names, out_file):
 
 # 主推理脚本
 def main():
-    root = '/path/to/data'
+    root = 'data/WebFG-400'
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # 加载类别名称
@@ -37,7 +37,7 @@ def main():
     # 加载模型
     num_classes = len(class_names)
     model = AIModel('efficientnet-b0', num_classes).to(device)
-    model.load_state_dict(torch.load('model.pth', map_location=device))
+    model.load_state_dict(torch.load('model/model.pth', map_location=device))
 
     # 构建测试 DataLoader
     test_set = TestDataset(os.path.join(root, 'test'), transform=data_transforms['test'])
