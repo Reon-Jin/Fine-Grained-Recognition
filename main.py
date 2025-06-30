@@ -58,7 +58,7 @@ def main():
 
     # 构建测试 DataLoader
     test_set = TestDataset(os.path.join(root, 'test'), transform=data_transforms['test'])
-    test_loader = DataLoader(test_set, batch_size=256, shuffle=False, num_workers=4)
+    test_loader = DataLoader(test_set, batch_size=64, shuffle=False, num_workers=4)
 
     ids, preds = predict(model, test_loader, device)
     save_results(ids, preds, class_names, 'submission.csv')
