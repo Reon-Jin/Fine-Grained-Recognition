@@ -21,7 +21,8 @@ def predict(model, loader, device):
 
 # 保存结果到 CSV
 def save_results(ids, preds, class_names, out_file):
-    labels = [class_names[p] for p in preds]
+    """Write numeric class ids starting from 1."""
+    labels = [p + 1 for p in preds]
     df = pd.DataFrame({'id': ids, 'label': labels})
     df.to_csv(out_file, index=False)
 
