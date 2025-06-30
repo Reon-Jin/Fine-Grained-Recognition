@@ -22,10 +22,13 @@ def predict(model, loader, device):
 
 # 保存结果到 CSV
 def save_results(ids, preds, class_names, out_file):
-    """Write numeric class ids starting from 1."""
-    labels = [p + 1 for p in preds]
+    """Write predicted class names padded to four digits."""
+    labels = []
+    for p in preds:
+        name = class_names[p]
+        labels.append(str(name).zfill(4))
     df = pd.DataFrame({'id': ids, 'label': labels})
-    df.to_csv(out_file, index=False)
+    df.to_csv(out_file, index=False, header=False)
 
 # 主推理脚本
 def main():
@@ -55,7 +58,7 @@ def main():
 
     # 构建测试 DataLoader
     test_set = TestDataset(os.path.join(root, 'test'), transform=data_transforms['test'])
-    test_loader = DataLoader(test_set, batch_size=256, shuffle=False, num_workers=4)
+    test_loader = DataLoader(test_set, batch_size=64, shuffle=False, num_workers=4)
 
     ids, preds = predict(model, test_loader, device)
     save_results(ids, preds, class_names, 'submission.csv')
