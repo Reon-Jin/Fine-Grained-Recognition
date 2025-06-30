@@ -1,6 +1,7 @@
 # train.py
 import os
 import time
+import argparse
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -37,9 +38,19 @@ def validate(model, loader, criterion, device):
 
 # 主训练脚本
 def main():
-    root = 'data/WebFG-400'  # 根目录，包含 train/ 和 test/
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print("device=",device)
+    parser = argparse.ArgumentParser()
+    default_device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    parser.add_argument('--device', default=default_device,
+                        help='training device, e.g. "cuda:0" or "cpu"')
+    parser.add_argument('--root', default='data/WebFG-400',
+                        help='dataset root directory')
+    args = parser.parse_args()
+
+    device = torch.device(args.device)
+    if device.type == 'cuda':
+        torch.backends.cudnn.benchmark = True
+    root = args.root  # 根目录，包含 train/ 和 test/
+    print("device=", device)
     train_set = get_train_dataset(root)
     val_set   = get_val_dataset(root)
     num_classes = len(train_set.classes)
