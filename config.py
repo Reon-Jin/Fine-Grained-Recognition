@@ -28,7 +28,8 @@ def get_train_dataset(root_dir):
     return ImageFolder(os.path.join(root_dir, 'train'), transform=data_transforms['train'])
 
 def get_val_dataset(root_dir):
-    return ImageFolder(os.path.join(root_dir, 'test'), transform=data_transforms['test'])
+    """Validation set shares the same structure as ``train``."""
+    return ImageFolder(os.path.join(root_dir, 'val'), transform=data_transforms['test'])
 
 # 测试集：无标签，仅返回图像和文件名
 class TestDataset(Dataset):
