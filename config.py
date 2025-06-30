@@ -48,7 +48,7 @@ def _prepare_datasets(root_dir):
     _val_subset = ImageFolderSubset(val_set, val_indices)
 
 # 统一图像尺寸
-imgsz = 384
+imgsz = 224
 
 # 数据预处理管道
 data_transforms = {
