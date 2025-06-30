@@ -55,8 +55,8 @@ def main():
     val_set   = get_val_dataset(root)
     num_classes = len(train_set.classes)
 
-    train_loader = DataLoader(train_set, batch_size=64, shuffle=True, num_workers=4)
-    val_loader   = DataLoader(val_set, batch_size=64, shuffle=False, num_workers=4)
+    train_loader = DataLoader(train_set, batch_size=32, shuffle=True, num_workers=4)
+    val_loader   = DataLoader(val_set, batch_size=32, shuffle=False, num_workers=4)
 
     model = AIModel('efficientnet-b0', num_classes).to(device)
     criterion = nn.CrossEntropyLoss()
