@@ -1,7 +1,2 @@
-# AI-Detector
+pip install -r requirement.txt
 
-2024 年第六届全球校园人工智能算法精英大赛全国总决赛一等奖
-
-北京赛区第一
-
-AI 生成人脸图像鉴别
