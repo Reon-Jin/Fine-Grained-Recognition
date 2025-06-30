@@ -12,14 +12,14 @@
 ## 使用方法
 
 ### 训练
-`train.py` 用于训练模型，可指定数据集路径和设备等参数：
+`train.py` 用于训练模型，可指定数据集路径、批大小等参数：
 ```bash
-python train.py --root path/to/dataset --device cuda
+python train.py --root path/to/dataset --device cuda --batch-size 32
 ```
 
 ### 预测
 `main.py` 用于加载训练好的权重并对测试集进行预测：
 ```bash
-python main.py --root path/to/dataset --weights model/model.pth --device cuda
+python main.py --root path/to/dataset --weights model/model.pth --device cuda --batch-size 64
 ```
 

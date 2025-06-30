@@ -25,27 +25,34 @@ def rand_bbox(size, lam):
     return bbx1, bby1, bbx2, bby2
 
 
-def train_one_epoch(model, loader, criterion, optimizer, device):
+def train_one_epoch(model, loader, criterion, optimizer, device, scaler=None):
     model.train()
     total_loss = 0
     for imgs, labels in loader:
-        imgs, labels = imgs.to(device), labels.to(device)
+        imgs, labels = imgs.to(device, non_blocking=True), labels.to(device, non_blocking=True)
         optimizer.zero_grad()
 
-        if np.random.rand() < 0.5:
-            lam = np.random.beta(1.0, 1.0)
-            rand_index = torch.randperm(imgs.size(0)).to(device)
-            bbx1, bby1, bbx2, bby2 = rand_bbox(imgs.size(), lam)
-            imgs[:, :, bby1:bby2, bbx1:bbx2] = imgs[rand_index, :, bby1:bby2, bbx1:bbx2]
-            lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (imgs.size(-1) * imgs.size(-2)))
-            outputs = model(imgs)
-            loss = lam * criterion(outputs, labels) + (1 - lam) * criterion(outputs, labels[rand_index])
-        else:
-            outputs = model(imgs)
-            loss = criterion(outputs, labels)
+        with torch.cuda.amp.autocast(enabled=scaler is not None):
+            if np.random.rand() < 0.5:
+                lam = np.random.beta(1.0, 1.0)
+                rand_index = torch.randperm(imgs.size(0), device=device)
+                bbx1, bby1, bbx2, bby2 = rand_bbox(imgs.size(), lam)
+                imgs[:, :, bby1:bby2, bbx1:bbx2] = imgs[rand_index, :, bby1:bby2, bbx1:bbx2]
+                lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (imgs.size(-1) * imgs.size(-2)))
+                outputs = model(imgs)
+                loss = lam * criterion(outputs, labels) + (1 - lam) * criterion(outputs, labels[rand_index])
+            else:
+                outputs = model(imgs)
+                loss = criterion(outputs, labels)
 
-        loss.backward()
-        optimizer.step()
+        if scaler is not None:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
+
         total_loss += loss.item() * imgs.size(0)
     return total_loss / len(loader.dataset)
 
@@ -71,6 +78,12 @@ def main():
                         help='training device, e.g. "cuda:0" or "cpu"')
     parser.add_argument('--root', default='data/WebFG-400',
                         help='dataset root directory')
+    parser.add_argument('--batch-size', type=int, default=32,
+                        help='images per batch')
+    parser.add_argument('--epochs', type=int, default=10,
+                        help='number of training epochs')
+    parser.add_argument('--workers', type=int, default=4,
+                        help='dataloader workers')
     args = parser.parse_args()
 
     device = torch.device(args.device)
@@ -82,17 +95,31 @@ def main():
     val_set   = get_val_dataset(root)
     num_classes = len(train_set.classes)
 
-    train_loader = DataLoader(train_set, batch_size=64, shuffle=True, num_workers=4)
-    val_loader   = DataLoader(val_set, batch_size=64, shuffle=False, num_workers=4)
+    train_loader = DataLoader(
+        train_set,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.workers,
+        pin_memory=(device.type == 'cuda'),
+    )
+    val_loader = DataLoader(
+        val_set,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.workers,
+        pin_memory=(device.type == 'cuda'),
+    )
 
     model = AIModel(num_classes).to(device)
     criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+
+    scaler = torch.cuda.amp.GradScaler() if device.type == 'cuda' else None
 
     best_acc = 0
-    for epoch in range(1, 10):
-        train_loss = train_one_epoch(model, train_loader, criterion, optimizer, device)
+    for epoch in range(1, args.epochs + 1):
+        train_loss = train_one_epoch(model, train_loader, criterion, optimizer, device, scaler)
         val_loss, val_acc = validate(model, val_loader, criterion, device)
         print(f'Epoch {epoch:03d} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}')
         scheduler.step()

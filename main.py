@@ -37,6 +37,10 @@ def main():
                         help='dataset root directory')
     parser.add_argument('--weights', default='model/model.pth',
                         help='path to model weights')
+    parser.add_argument('--batch-size', type=int, default=64,
+                        help='batch size for inference')
+    parser.add_argument('--workers', type=int, default=4,
+                        help='dataloader workers')
     args = parser.parse_args()
 
     device = torch.device(args.device)
@@ -55,7 +59,13 @@ def main():
 
     # 构建测试 DataLoader
     test_set = TestDataset(os.path.join(root, 'test'), transform=data_transforms['test'])
-    test_loader = DataLoader(test_set, batch_size=256, shuffle=False, num_workers=4)
+    test_loader = DataLoader(
+        test_set,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.workers,
+        pin_memory=(device.type == 'cuda'),
+    )
 
     ids, preds = predict(model, test_loader, device)
     save_results(ids, preds, class_names, 'submission.csv')
