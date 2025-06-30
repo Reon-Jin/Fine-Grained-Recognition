@@ -45,4 +45,5 @@ class TestDataset(Dataset):
         fname = self.names[idx]
         path = os.path.join(self.root, fname)
         img = Image.open(path).convert('RGB')
-        return self.transform(img), os.path.splitext(fname)[0]
+        # return the file name with extension for saving results
+        return self.transform(img), fname
