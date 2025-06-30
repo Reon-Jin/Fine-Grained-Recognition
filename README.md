@@ -1,6 +1,6 @@
 # Fine-Grained Recognition
 
-本项目实现细粒度网络监督多分类任务，模型基于 EfficientNet 架构。
+本项目实现细粒度网络监督多分类任务，模型基于 ResNet50 并加入注意力与 STN 模块。
 
 ## 环境要求
 - Python 3.10

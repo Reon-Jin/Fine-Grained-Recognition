@@ -4,19 +4,46 @@ import time
 import argparse
 import torch
 import torch.nn as nn
+import numpy as np
 from torch.utils.data import DataLoader
 from config import get_train_dataset, get_val_dataset
 from model import AIModel
 
 # 单轮训练
+def rand_bbox(size, lam):
+    W = size[3]
+    H = size[2]
+    cut_rat = np.sqrt(1. - lam)
+    cut_w = int(W * cut_rat)
+    cut_h = int(H * cut_rat)
+    cx = np.random.randint(W)
+    cy = np.random.randint(H)
+    bbx1 = np.clip(cx - cut_w // 2, 0, W)
+    bby1 = np.clip(cy - cut_h // 2, 0, H)
+    bbx2 = np.clip(cx + cut_w // 2, 0, W)
+    bby2 = np.clip(cy + cut_h // 2, 0, H)
+    return bbx1, bby1, bbx2, bby2
+
+
 def train_one_epoch(model, loader, criterion, optimizer, device):
     model.train()
     total_loss = 0
     for imgs, labels in loader:
         imgs, labels = imgs.to(device), labels.to(device)
         optimizer.zero_grad()
-        outputs = model(imgs)
-        loss = criterion(outputs, labels)
+
+        if np.random.rand() < 0.5:
+            lam = np.random.beta(1.0, 1.0)
+            rand_index = torch.randperm(imgs.size(0)).to(device)
+            bbx1, bby1, bbx2, bby2 = rand_bbox(imgs.size(), lam)
+            imgs[:, :, bby1:bby2, bbx1:bbx2] = imgs[rand_index, :, bby1:bby2, bbx1:bbx2]
+            lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (imgs.size(-1) * imgs.size(-2)))
+            outputs = model(imgs)
+            loss = lam * criterion(outputs, labels) + (1 - lam) * criterion(outputs, labels[rand_index])
+        else:
+            outputs = model(imgs)
+            loss = criterion(outputs, labels)
+
         loss.backward()
         optimizer.step()
         total_loss += loss.item() * imgs.size(0)
@@ -58,8 +85,8 @@ def main():
     train_loader = DataLoader(train_set, batch_size=64, shuffle=True, num_workers=4)
     val_loader   = DataLoader(val_set, batch_size=64, shuffle=False, num_workers=4)
 
-    model = AIModel('efficientnet-b0', num_classes).to(device)
-    criterion = nn.CrossEntropyLoss()
+    model = AIModel(num_classes).to(device)
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)
 

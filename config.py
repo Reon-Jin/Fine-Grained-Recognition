@@ -6,14 +6,16 @@ from torchvision import transforms
 from torchvision.datasets import ImageFolder
 
 # 统一图像尺寸
-imgsz = 224
+imgsz = 384
 
 # 数据预处理管道
 data_transforms = {
     'train': transforms.Compose([
         transforms.Resize((imgsz, imgsz)),
+        transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+        transforms.RandomErasing(p=0.25),
     ]),
     'test': transforms.Compose([
         transforms.Resize((imgsz, imgsz)),
