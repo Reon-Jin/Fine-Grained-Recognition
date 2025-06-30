@@ -6,7 +6,7 @@ from torchvision import transforms
 from torchvision.datasets import ImageFolder
 
 # 统一图像尺寸
-imgsz = 224
+imgsz = 384
 
 # 数据预处理管道
 data_transforms = {
