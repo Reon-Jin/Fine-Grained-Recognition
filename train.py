@@ -55,8 +55,8 @@ def main():
     val_set   = get_val_dataset(root)
     num_classes = len(train_set.classes)
 
-    train_loader = DataLoader(train_set, batch_size=64, shuffle=True, num_workers=4)
-    val_loader   = DataLoader(val_set, batch_size=64, shuffle=False, num_workers=4)
+    train_loader = DataLoader(train_set, batch_size=32, shuffle=True, num_workers=4)
+    val_loader   = DataLoader(val_set, batch_size=32, shuffle=False, num_workers=4)
 
     model = AIModel('efficientnet-b0', num_classes).to(device)
     criterion = nn.CrossEntropyLoss()
@@ -64,7 +64,7 @@ def main():
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)
 
     best_acc = 0
-    for epoch in range(1, 10):
+    for epoch in range(1, 101):
         train_loss = train_one_epoch(model, train_loader, criterion, optimizer, device)
         val_loss, val_acc = validate(model, val_loader, criterion, device)
         print(f'Epoch {epoch:03d} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}')
