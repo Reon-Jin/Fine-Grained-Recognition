@@ -8,3 +8,4 @@ pandas
 efficientnet_pytorch
 matplotlib
 opencv-python
+tensorboard
