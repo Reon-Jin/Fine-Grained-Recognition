@@ -20,6 +20,10 @@
 ```bash
 python train.py --root path/to/dataset --device cuda
 ```
+可选使用 `--logdir` 将指标写入 TensorBoard：
+```bash
+python train.py --root path/to/dataset --logdir runs
+```
 
 若数据集中包含带 alpha 通道的 RGBA 图像，数据加载器会自动转为 RGB，避免训练时的
 相关警告。
@@ -29,4 +33,8 @@ python train.py --root path/to/dataset --device cuda
 ```bash
 python main.py --root path/to/dataset --weights model/model.pth --device cuda
 ```
+
+### 可视化
+- `visualize_cam.py` 使用 Grad-CAM 查看注意力区域
+- `visualize_proposals.py` 绘制前 K 个候选框
 
