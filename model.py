@@ -23,6 +23,7 @@ class PositionalEncoding(nn.Module):
         return x + self.pe[:, :x.size(1), :]
 
 
+
 class SEBlock(nn.Module):
     """Squeeze-and-Excitation block used as a lightweight attention module."""
 
