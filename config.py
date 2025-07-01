@@ -7,6 +7,13 @@ from torch.utils.data import Dataset
 from torchvision import transforms
 from torchvision.datasets import ImageFolder
 
+# Custom loader to handle RGBA images by converting them to RGB. This avoids
+# warnings during training when images contain an alpha channel.
+def rgb_loader(path):
+    with open(path, 'rb') as f:
+        img = Image.open(f)
+        return img.convert('RGB')
+
 _train_subset = None
 _val_subset = None
 
@@ -34,7 +41,7 @@ def _prepare_datasets(root_dir):
         return
 
     base_dir = os.path.join(root_dir, 'train')
-    full_dataset = ImageFolder(base_dir)
+    full_dataset = ImageFolder(base_dir, loader=rgb_loader)
     n_total = len(full_dataset)
     val_len = int(n_total * 0.2)
     train_len = n_total - val_len
@@ -43,8 +50,8 @@ def _prepare_datasets(root_dir):
     train_indices = indices[:train_len]
     val_indices = indices[train_len:]
 
-    train_set = ImageFolder(base_dir, transform=data_transforms['train'])
-    val_set = ImageFolder(base_dir, transform=data_transforms['test'])
+    train_set = ImageFolder(base_dir, transform=data_transforms['train'], loader=rgb_loader)
+    val_set = ImageFolder(base_dir, transform=data_transforms['test'], loader=rgb_loader)
     _train_subset = ImageFolderSubset(train_set, train_indices)
     _val_subset = ImageFolderSubset(val_set, val_indices)
 
