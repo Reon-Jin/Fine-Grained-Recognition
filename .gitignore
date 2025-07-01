@@ -4,3 +4,4 @@ model/
 submission.csv
 __pycache__/
 runs/
+visualize_cam.py
