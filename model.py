@@ -10,7 +10,7 @@ class AIModel(nn.Module):
     def __init__(self, arch: str = "vit-b/16", num_classes: int = 400):
         super().__init__()
 
-        valid_aliases = {"vit-b/16", "vit_b_16", "vit_base_patch16_224"}
+        valid_aliases = {"vit-b/16", "vit_b_16", "vit_base_patch16_224.augreg_in1k"}
         if arch.lower() not in valid_aliases:
             raise ValueError(f"Unsupported ViT variant: {arch}. "
                              f"Supported aliases: {valid_aliases}")
