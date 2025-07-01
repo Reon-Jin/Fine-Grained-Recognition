@@ -1,94 +1,88 @@
-# config.py
-import os
+# config.py -- JSON-based dataset loader configuration
+import os, json
 from PIL import Image, ImageFile
 ImageFile.LOAD_TRUNCATED_IMAGES = True
+
 import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
-from torchvision.datasets import ImageFolder
 
-_train_subset = None
-_val_subset = None
+# Unified image size for ViT
+imgsz = 224
 
-
-class ImageFolderSubset(Dataset):
-    """Subset of ``ImageFolder`` that exposes ``classes`` attribute."""
-
-    def __init__(self, dataset, indices):
-        self.dataset = dataset
-        self.indices = indices
-        self.classes = dataset.classes
-        self.class_to_idx = dataset.class_to_idx
-
-    def __len__(self):
-        return len(self.indices)
-
-    def __getitem__(self, idx):
-        return self.dataset[self.indices[idx]]
-
-
-def _prepare_datasets(root_dir):
-    """Split the training folder into train/val subsets (80/20)."""
-    global _train_subset, _val_subset
-    if _train_subset is not None and _val_subset is not None:
-        return
-
-    base_dir = os.path.join(root_dir, 'train')
-    full_dataset = ImageFolder(base_dir)
-    n_total = len(full_dataset)
-    val_len = int(n_total * 0.2)
-    train_len = n_total - val_len
-    generator = torch.Generator().manual_seed(42)
-    indices = torch.randperm(n_total, generator=generator).tolist()
-    train_indices = indices[:train_len]
-    val_indices = indices[train_len:]
-
-    train_set = ImageFolder(base_dir, transform=data_transforms['train'])
-    val_set = ImageFolder(base_dir, transform=data_transforms['test'])
-    _train_subset = ImageFolderSubset(train_set, train_indices)
-    _val_subset = ImageFolderSubset(val_set, val_indices)
-
-# 统一图像尺寸
-imgsz = 260
-
-# 数据预处理管道
+# Common data transformation pipelines
 data_transforms = {
     'train': transforms.Compose([
         transforms.Resize((imgsz, imgsz)),
+        transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+        transforms.Normalize([0.485, 0.456, 0.406],
+                             [0.229, 0.224, 0.225]),
     ]),
     'test': transforms.Compose([
         transforms.Resize((imgsz, imgsz)),
         transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+        transforms.Normalize([0.485, 0.456, 0.406],
+                             [0.229, 0.224, 0.225]),
     ]),
+    'val': transforms.Compose([
+        transforms.Resize((imgsz, imgsz)),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406],
+                             [0.229, 0.224, 0.225]),
+    ]),    
 }
 
-# 训练/验证集自动读取子目录作为类别
-def get_train_dataset(root_dir):
-    """Return the training subset (80%)."""
-    _prepare_datasets(root_dir)
-    return _train_subset
+def _load_list(json_path: str):
+    with open(json_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
 
-def get_val_dataset(root_dir):
-    """Return the validation subset (20%)."""
-    _prepare_datasets(root_dir)
-    return _val_subset
+class JsonLabeledDataset(Dataset):
+    """Dataset for train/val with labels inferred from first directory level."""
+    def __init__(self, root_dir: str, json_file: str, transform):
+        self.root_dir = root_dir
+        self.rel_paths = _load_list(os.path.join(root_dir, json_file))
+        self.transform = transform
 
-# 测试集：无标签，仅返回图像和文件名
-class TestDataset(Dataset):
-    def __init__(self, root_dir, transform):
-        self.root = root_dir
-        self.names = sorted(os.listdir(root_dir))
+        # Build class list from first folder in each path
+        folders = sorted({p.split(os.sep)[0] for p in self.rel_paths})
+        self.classes = folders
+        self.class_to_idx = {c: i for i, c in enumerate(self.classes)}
+
+    def __len__(self):
+        return len(self.rel_paths)
+
+    def __getitem__(self, idx):
+        rel_path = self.rel_paths[idx]
+        # Image path: root_dir/train/<rel_path>
+        img_path = os.path.join(self.root_dir,  rel_path)
+        img = Image.open(img_path).convert('RGB')
+        label_name = rel_path.split(os.sep)[0]
+        label = self.class_to_idx[label_name]
+        return self.transform(img), label
+
+class JsonTestDataset(Dataset):
+    """Dataset for test set without labels."""
+    def __init__(self, root_dir: str, json_file: str, transform):
+        self.root_dir = root_dir
+        self.rel_paths = _load_list(os.path.join(root_dir, json_file))
         self.transform = transform
 
     def __len__(self):
-        return len(self.names)
+        return len(self.rel_paths)
 
     def __getitem__(self, idx):
-        fname = self.names[idx]
-        path = os.path.join(self.root, fname)
-        img = Image.open(path).convert('RGB')
-        # return the file name with extension for saving results
-        return self.transform(img), fname
+        rel_path = self.rel_paths[idx]
+        img_path = os.path.join(self.root_dir, rel_path)
+        img = Image.open(img_path).convert('RGB')
+        return self.transform(img), rel_path  # return name for saving results
+
+# Public factory functions
+def get_train_dataset(root_dir: str):
+    return JsonLabeledDataset(root_dir, 'train.json', data_transforms['train'])
+
+def get_val_dataset(root_dir: str):
+    return JsonLabeledDataset(root_dir, 'val.json', data_transforms['val'])
+
+def get_test_dataset(root_dir: str):
+    return JsonTestDataset(root_dir, 'test.json', data_transforms['test'])
