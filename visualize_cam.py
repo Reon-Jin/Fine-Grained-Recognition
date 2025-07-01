@@ -82,7 +82,7 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     device = torch.device(args.device)
-    model = AIModel('efficientnet-b2', num_classes=400).to(device)
+    model = AIModel('efficientnet-b0', num_classes=400).to(device)
     model.load_state_dict(torch.load(args.weights, map_location=device))
     model.eval()
 
