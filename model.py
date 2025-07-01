@@ -114,7 +114,7 @@ class LightweightRPN(nn.Module):
         self.num_proposals = num_proposals
         self.roi_size = roi_size
 
-    def forward(self, feat: torch.Tensor) -> torch.Tensor:
+    def forward(self, feat: torch.Tensor):
         b, c, h, w = feat.shape
         x = self.conv(feat)
         box = self.box_pred(x)
@@ -139,7 +139,7 @@ class LightweightRPN(nn.Module):
         roi_feats = roi_feats.view(b, self.num_proposals, c)
         # aggregate proposals
         local_feat = roi_feats.mean(dim=1)
-        return local_feat
+        return local_feat, boxes
 
 class AIModel(nn.Module):
     def __init__(self, arch: str = 'efficientnet-b2', num_classes: int = 400,
@@ -168,14 +168,14 @@ class AIModel(nn.Module):
         self.dropout = self.backbone._dropout
         self.classifier = nn.Linear(embed_dim, num_classes)
 
-    def forward(self, x):
+    def forward(self, x, return_boxes: bool = False):
         # Backbone feature extraction with attention modules
         x = self.backbone.extract_features(x)
         x = self.attention(x)
         x = self.cbam(x)
 
         # Local region proposals and features
-        local_feat = self.rpn(x)
+        local_feat, boxes = self.rpn(x)
         local_feat = self.local_fc(local_feat)
 
         # Flatten spatial dims and add positional information
@@ -195,4 +195,6 @@ class AIModel(nn.Module):
         # Fuse global and local features
         feat = global_feat + local_feat
         out = self.classifier(feat)
+        if return_boxes:
+            return out, boxes
         return out
