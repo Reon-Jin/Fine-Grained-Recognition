@@ -6,4 +6,5 @@ torchvision==0.22.1+cu126
 tqdm
 pandas
 efficientnet_pytorch
-
+matplotlib
+opencv-python
