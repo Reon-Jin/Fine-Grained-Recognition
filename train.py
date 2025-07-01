@@ -1,7 +1,6 @@
 # train.py
 import os
 import time
-from typing import Optional
 import argparse
 import torch
 import torch.nn as nn
@@ -53,7 +52,7 @@ def main():
                         help='training device, e.g. "cuda:0" or "cpu"')
     parser.add_argument('--root', default='data/WebFG-400',
                         help='dataset root directory')
-    parser.add_argument('--logdir', default=None,
+    parser.add_argument('--logdir', default='runs',
                         help='directory for TensorBoard logs')
     args = parser.parse_args()
 
@@ -62,7 +61,7 @@ def main():
         torch.backends.cudnn.benchmark = True
     root = args.root  # 根目录，包含 train/ 和 test/
     print("device=", device)
-    writer: Optional[SummaryWriter] = SummaryWriter(args.logdir) if args.logdir else None
+    writer = SummaryWriter(args.logdir)
     train_set = get_train_dataset(root)
     val_set   = get_val_dataset(root)
     num_classes = len(train_set.classes)
@@ -80,11 +79,13 @@ def main():
         train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, device)
         val_loss, val_acc = validate(model, val_loader, criterion, device)
         print(f'Epoch {epoch:03d} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}')
-        if writer:
-            writer.add_scalar('Loss/train', train_loss, epoch)
-            writer.add_scalar('Acc/train', train_acc, epoch)
-            writer.add_scalar('Loss/val', val_loss, epoch)
-            writer.add_scalar('Acc/val', val_acc, epoch)
+        writer.add_scalar('Loss/train', train_loss, epoch)
+        writer.add_scalar('Acc/train', train_acc, epoch)
+        writer.add_scalar('Loss/val', val_loss, epoch)
+        writer.add_scalar('Acc/val', val_acc, epoch)
+        writer.add_scalar('LR', optimizer.param_groups[0]['lr'], epoch)
+        for name, param in model.named_parameters():
+            writer.add_histogram(name, param, epoch)
         scheduler.step()
         # 保存最佳模型
         if val_acc > best_acc:
@@ -92,8 +93,7 @@ def main():
             torch.save(model.state_dict(), 'model/model.pth')
     # 最终模型
     torch.save(model.state_dict(), 'model/model_final.pth')
-    if writer:
-        writer.close()
+    writer.close()
 
 if __name__ == '__main__':
     main()

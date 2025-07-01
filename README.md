@@ -2,9 +2,8 @@
 
 本项目实现细粒度网络监督多分类任务，模型基于 EfficientNet 架构并结合 Transformer 编码器。
 
-整体流程：EfficientNet Backbone 提取特征后，依次加入 SEBlock、CBAM 以及轻量级 RPN，
-在自动聚焦局部判别区域的同时抽取候选部件特征。然后将全局特征展平并加入位置编码送入
-更深的 Transformer Encoder，融合局部候选特征后进行分类。
+整体流程：EfficientNet Backbone 提取特征后，经过仅包含空间注意力的 CBAM，
+将特征展平并加入位置编码送入 Transformer Encoder 进行分类。
 
 ## 环境要求
 - Python 3.10
@@ -20,9 +19,9 @@
 ```bash
 python train.py --root path/to/dataset --device cuda
 ```
-可选使用 `--logdir` 将指标写入 TensorBoard：
+训练脚本会将指标写入 TensorBoard，默认目录为 `runs/`，可通过 `--logdir` 修改：
 ```bash
-python train.py --root path/to/dataset --logdir runs
+python train.py --root path/to/dataset --logdir my_runs
 ```
 
 若数据集中包含带 alpha 通道的 RGBA 图像，数据加载器会自动转为 RGB，避免训练时的
@@ -36,5 +35,5 @@ python main.py --root path/to/dataset --weights model/model.pth --device cuda
 
 ### 可视化
 - `visualize_cam.py` 使用 Grad-CAM 查看注意力区域
-- `visualize_proposals.py` 绘制前 K 个候选框
+- 训练过程的指标会自动写入 `runs/` 目录，可使用 TensorBoard 实时查看。
 
