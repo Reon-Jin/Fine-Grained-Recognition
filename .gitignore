@@ -3,3 +3,4 @@ data/
 model/
 submission.csv
 __pycache__/
+runs/

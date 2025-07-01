@@ -55,7 +55,7 @@ class CBAM(nn.Module):
 
 
 class AIModel(nn.Module):
-    def __init__(self, arch: str = 'efficientnet-b2', num_classes: int = 400,
+    def __init__(self, arch: str = 'efficientnet-b0', num_classes: int = 400,
                  embed_dim: int = 256, num_layers: int = 4, num_heads: int = 8) -> None:
         super().__init__()
         # ImageNet-1k 预训练
