@@ -1,6 +1,8 @@
 # Fine-Grained Recognition
 
-本项目实现细粒度网络监督多分类任务，模型基于 EfficientNet 架构。
+本项目实现细粒度网络监督多分类任务，模型基于 EfficientNet 架构并结合 Transformer 编码器。
+
+整体流程：EfficientNet Backbone 提取特征后接 SEBlock，然后将特征展平并加入位置编码送入 Transformer Encoder，最后进行分类。
 
 ## 环境要求
 - Python 3.10
