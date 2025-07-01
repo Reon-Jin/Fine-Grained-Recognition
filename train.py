@@ -58,7 +58,7 @@ def main():
     train_loader = DataLoader(train_set, batch_size=32, shuffle=True, num_workers=4)
     val_loader   = DataLoader(val_set, batch_size=32, shuffle=False, num_workers=4)
 
-    model = AIModel('efficientnet-b0', num_classes).to(device)
+    model = AIModel('efficientnet-b2', num_classes).to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)
