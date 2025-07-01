@@ -6,6 +6,7 @@ import pandas as pd
 from torch.utils.data import DataLoader
 from config import TestDataset, data_transforms, get_train_dataset
 from model import AIModel
+import csv
 
 # 推理
 def predict(model, loader, device):
@@ -22,13 +23,20 @@ def predict(model, loader, device):
 
 # 保存结果到 CSV
 def save_results(ids, preds, class_names, out_file):
-    """Write predicted class names padded to four digits."""
-    labels = []
-    for p in preds:
-        name = class_names[p]
-        labels.append(str(name).zfill(4))
-    df = pd.DataFrame({'id': ids, 'label': labels})
-    df.to_csv(out_file, index=False, header=False)
+    labels = [f'="{str(class_names[int(p)]).zfill(4)}"' for p in preds]  # 添加=前缀
+    pd.DataFrame({'id': ids, 'label': labels}).to_csv(
+        out_file,
+        index=False,
+        header=False,
+        quoting=csv.QUOTE_NONE,  # 不添加额外引号
+        escapechar='\\'
+    )
+
+    # 验证写入结果
+    with open(out_file, 'r') as f:
+        print("CSV前5行内容:")
+        for _ in range(5):
+            print(f.readline().strip())
 
 # 主推理脚本
 def main():
