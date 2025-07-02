@@ -1,7 +1,7 @@
 # model.py
-from efficientnet_pytorch import EfficientNet
 import torch
 import torch.nn as nn
+from torchvision import models
 
 
 class PositionalEncoding(nn.Module):
@@ -68,14 +68,17 @@ class CBAM(nn.Module):
 
 
 class AIModel(nn.Module):
-    def __init__(self, arch: str = 'efficientnet-b0', num_classes: int = 400,
-                 embed_dim: int = 256, num_layers: int = 4, num_heads: int = 8) -> None:
+    def __init__(self, num_classes: int = 400, embed_dim: int = 256,
+                 num_layers: int = 4, num_heads: int = 8) -> None:
         super().__init__()
-        self.backbone = EfficientNet.from_pretrained(arch)
-        self.cbam_backbone = CBAM(in_planes=self.backbone._conv_head.out_channels)
-        self.embed_conv = nn.Conv2d(
-            self.backbone._conv_head.out_channels, embed_dim, kernel_size=1
-        )
+
+        weights = models.ConvNeXt_Tiny_Weights.DEFAULT
+        self.backbone = models.convnext_tiny(weights=weights)
+        out_channels = self.backbone.classifier[2].in_features
+        self.backbone.classifier = nn.Identity()
+
+        self.cbam_backbone = CBAM(in_planes=out_channels)
+        self.embed_conv = nn.Conv2d(out_channels, embed_dim, kernel_size=1)
         self.cbam_transformer = CBAM(in_planes=embed_dim)
         self.pos_embed = PositionalEncoding(embed_dim)
 
@@ -85,11 +88,11 @@ class AIModel(nn.Module):
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
         self.pool = nn.AdaptiveAvgPool1d(1)
-        self.dropout = self.backbone._dropout
+        self.dropout = nn.Dropout(p=0.1)
         self.classifier = nn.Linear(embed_dim, num_classes)
 
     def forward(self, x):
-        x = self.backbone.extract_features(x)
+        x = self.backbone.features(x)
         x = self.cbam_backbone(x)  # CBAM after backbone
         x = self.embed_conv(x)
         x = self.cbam_transformer(x)  # CBAM before transformer

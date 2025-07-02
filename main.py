@@ -61,7 +61,7 @@ def main():
 
     # 加载模型
     num_classes = len(class_names)
-    model = AIModel('efficientnet-b0', num_classes).to(device)
+    model = AIModel(num_classes=num_classes).to(device)
     model.load_state_dict(torch.load(args.weights, map_location=device))
 
     # 构建测试 DataLoader
