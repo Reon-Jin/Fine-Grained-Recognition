@@ -5,7 +5,7 @@ from efficientnet_pytorch import EfficientNet
 
 class AIModel(nn.Module):
     """EfficientNet model with added Dropout for regularization."""
-    def __init__(self, num_classes, efficientnet_type="efficientnet-b0", dropout_rate=0.5):
+    def __init__(self, num_classes, efficientnet_type="efficientnet-b2", dropout_rate=0.5):
         super().__init__()
         # Load pretrained EfficientNet backbone without classifier
         self.backbone = EfficientNet.from_pretrained(efficientnet_type)

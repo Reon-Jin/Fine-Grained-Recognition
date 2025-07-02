@@ -97,7 +97,7 @@ if __name__ == "__main__":
         acc = validate(model, val_loader, criterion, device, epoch)
         if acc > best_acc:
             best_acc = acc
-            torch.save(model.state_dict(), "model.pth")
-        torch.save(model.state_dict(), "model_final.pth")
+            torch.save(model.state_dict(), "model/model.pth")
+        torch.save(model.state_dict(), "model/model_final.pth")
 
     writer.close()
