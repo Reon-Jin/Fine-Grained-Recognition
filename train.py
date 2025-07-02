@@ -10,6 +10,8 @@ from datetime import datetime
 import os
 from PIL import ImageFile
 ImageFile.LOAD_TRUNCATED_IMAGES = True
+import warnings
+warnings.filterwarnings("ignore", message="Palette images with Transparency expressed in bytes should be converted to RGBA images")
 
 # Log directory
 current_time = datetime.now().strftime("%d-%H-%M-%S")
