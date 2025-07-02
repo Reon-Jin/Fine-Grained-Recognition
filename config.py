@@ -2,7 +2,8 @@ from torchvision import transforms
 from torch.utils.data import Dataset
 import os
 from PIL import Image
-
+from PIL import ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 imgsz = 224
 data_transforms = {
     "train": transforms.Compose(

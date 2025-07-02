@@ -8,6 +8,11 @@ from config import *
 from torch.utils.tensorboard import SummaryWriter
 from datetime import datetime
 import os
+from PIL import ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+import warnings
+warnings.filterwarnings("ignore", message="Palette images with Transparency expressed in bytes should be converted to RGBA images")
+
 
 # Dataset path
 root_dir = "data/WebFG-400/train"
@@ -22,8 +27,8 @@ train_dataset, val_dataset = random_split(
     [train_size, val_size],
     generator=torch.Generator().manual_seed(42),
 )
-val_loader = DataLoader(val_dataset, batch_size=128, shuffle=False, num_workers=16)
-current_time = datetime.now().strftime("%d-%H:%M:%S")
+val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False, num_workers=16)
+current_time = datetime.now().strftime("%d-%H-%M-%S")
 log_dir = os.path.join("runs", current_time)
 writer = SummaryWriter(log_dir)
 
@@ -78,9 +83,9 @@ if __name__ == "__main__":
     model = AIModel(num_classes=num_classes).to(device)
     train_loader = DataLoader(
         train_dataset,
-        batch_size=64,
+        batch_size=32,
         shuffle=True,
-        num_workers=16,
+        num_workers=8,
     )
     optimizer = optim.AdamW(model.parameters())
     scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
