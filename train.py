@@ -8,7 +8,6 @@ from config import get_train_dataset, get_val_dataset
 from model import AIModel
 from tqdm import tqdm
 
-
 def train_one_epoch(model, loader, criterion, optimizer, device):
     model.train()
     total_loss, correct = 0.0, 0
@@ -26,7 +25,6 @@ def train_one_epoch(model, loader, criterion, optimizer, device):
     acc = correct / len(loader.dataset)
     return avg_loss, acc
 
-
 def validate(model, loader, criterion, device):
     model.eval()
     total_loss, correct = 0.0, 0
@@ -42,11 +40,10 @@ def validate(model, loader, criterion, device):
     acc = correct / len(loader.dataset)
     return avg_loss, acc
 
-
 def main():
     parser = argparse.ArgumentParser()
     default_device = "cuda" if torch.cuda.is_available() else "cpu"
-    parser.add_argument("--device", default=default_device, help="training device, e.g. 'cuda:0' or 'cpu'")
+    parser.add_argument("--device", default=default_device, help="training device, e.g. 'cuda:0' or 'cpu'" )
     parser.add_argument("--root", default="data/WebFG-400", help="dataset root directory")
     parser.add_argument("--epochs", type=int, default=50, help="max training epochs")
     parser.add_argument("--batch_size", type=int, default=32)
@@ -71,9 +68,16 @@ def main():
 
     # Build model
     model = AIModel(num_classes=num_classes).to(device)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+
+    # 更平滑的 LR 调度：CosineAnnealingLR
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=args.epochs,
+        eta_min=1e-6
+    )
+
     writer = SummaryWriter(args.logdir)
 
     best_acc = 0.0
@@ -84,15 +88,17 @@ def main():
         train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, device)
         val_loss, val_acc = validate(model, val_loader, criterion, device)
 
+        # Log training metrics
         print(f"Epoch {epoch:03d} | "
               f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | "
               f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}")
-
         writer.add_scalar("Loss/train", train_loss, epoch)
         writer.add_scalar("Accuracy/train", train_acc, epoch)
         writer.add_scalar("Loss/val", val_loss, epoch)
         writer.add_scalar("Accuracy/val", val_acc, epoch)
+        writer.add_scalar("LR", optimizer.param_groups[0]['lr'], epoch)
 
+        # Step scheduler
         scheduler.step()
 
         # Early stopping
@@ -109,7 +115,6 @@ def main():
 
     torch.save(model.state_dict(), os.path.join("model", "model_final.pth"))
     writer.close()
-
 
 if __name__ == "__main__":
     main()
