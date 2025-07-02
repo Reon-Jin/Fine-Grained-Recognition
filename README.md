@@ -1,9 +1,9 @@
 # Fine-Grained Recognition
 
-本项目实现细粒度网络监督多分类任务，模型基于 EfficientNet 架构并结合 Transformer 编码器。
+本项目实现细粒度网络监督多分类任务，模型基于 ConvNeXt Tiny 架构并结合 Transformer 编码器。
 
-整体流程：EfficientNet Backbone 提取特征后，经过仅包含空间注意力的 CBAM，
-将特征展平并加入位置编码送入 Transformer Encoder 进行分类。
+整体流程：ConvNeXt Tiny 提取特征后先经过 CBAM 增强，再用 1x1 卷积降维并再次通过 CBAM，
+随后展平特征并加入位置编码送入 Transformer Encoder，最后全局池化后完成分类。
 
 ## 环境要求
 - Python 3.10
