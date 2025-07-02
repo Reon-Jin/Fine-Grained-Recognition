@@ -1,63 +1,70 @@
-from PIL import ImageFile
-# allow loading truncated images
-ImageFile.LOAD_TRUNCATED_IMAGES = True
+from torchvision import transforms
+from torch.utils.data import Dataset
 import os
-import torch
-from torchvision import transforms, datasets
-from torch.utils.data import DataLoader, Subset
+from PIL import Image
 
-# dataset path (all images)
-DATA_DIR = os.path.join('data', 'WebFG-400', 'train')
+imgsz = 224
+data_transforms = {
+    "train": transforms.Compose(
+        [
+            transforms.Resize((imgsz, imgsz)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+        ]
+    ),
+    "test": transforms.Compose(
+        [
+            transforms.Resize((imgsz, imgsz)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+        ]
+    ),
+}
 
-# training hyperparameters
-IMG_SIZE = 224
-BATCH_SIZE = 32
-NUM_WORKERS = 4
-LEARNING_RATE = 1e-4
-EPOCHS = 50
-VALID_SPLIT = 0.2  # proportion for validation
-SEED = 42
+
+class TestDataset(Dataset):
+    def __init__(self, test_dir, transform=None):
+        self.test_dir = test_dir
+        self.transform = transform
+        self.image_paths = []
+        for img_name in os.listdir(test_dir):
+            img_path = os.path.join(test_dir, img_name)
+            self.image_paths.append(img_path)
+
+    def __len__(self):
+        return len(self.image_paths)
+
+    def __getitem__(self, idx):
+        img_path = self.image_paths[idx]
+        image = Image.open(img_path).convert("RGB")
+        if self.transform:
+            image = self.transform(image)
+        id = os.path.splitext(os.path.basename(img_path))[0]
+        return image, id
 
 
-def get_dataloaders(data_dir=DATA_DIR):
-    # transforms
-    train_transforms = transforms.Compose([
-        transforms.Resize((IMG_SIZE, IMG_SIZE)),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomRotation(15),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
-    val_transforms = transforms.Compose([
-        transforms.Resize((IMG_SIZE, IMG_SIZE)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
+class AIDataset(Dataset):
+    def __init__(self, root_dir, transform=None):
+        self.root_dir = root_dir
+        self.transform = transform
+        self.labels = {"ai": 1, "real": 0}
+        self.image_paths = []
+        self.labels_list = []
+        for split in ["train"]:
+            for label in ["ai", "real"]:
+                folder_path = os.path.join(root_dir, split, label)
+                for img_name in os.listdir(folder_path):
+                    img_path = os.path.join(folder_path, img_name)
+                    self.image_paths.append(img_path)
+                    self.labels_list.append(self.labels[label])
 
-    # get splits
-    base_dataset = datasets.ImageFolder(data_dir, transform=None)
-    dataset_size = len(base_dataset)
-    indices = torch.randperm(dataset_size, generator=torch.Generator().manual_seed(SEED)).tolist()
-    val_size = int(dataset_size * VALID_SPLIT)
-    train_indices = indices[val_size:]
-    val_indices = indices[:val_size]
+    def __len__(self):
+        return len(self.image_paths)
 
-    # create subsets with appropriate transforms
-    train_dataset = Subset(
-        datasets.ImageFolder(data_dir, transform=train_transforms), train_indices
-    )
-    val_dataset = Subset(
-        datasets.ImageFolder(data_dir, transform=val_transforms), val_indices
-    )
-
-    # dataloaders
-    train_loader = DataLoader(
-        train_dataset, batch_size=BATCH_SIZE, shuffle=True,
-        num_workers=NUM_WORKERS, pin_memory=True
-    )
-    val_loader = DataLoader(
-        val_dataset, batch_size=BATCH_SIZE, shuffle=False,
-        num_workers=NUM_WORKERS, pin_memory=True
-    )
-
-    return train_loader, val_loader
+    def __getitem__(self, idx):
+        img_path = self.image_paths[idx]
+        image = Image.open(img_path).convert("RGB")
+        if self.transform:
+            image = self.transform(image)
+        label = self.labels_list[idx]
+        return image, label
