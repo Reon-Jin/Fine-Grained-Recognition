@@ -1,99 +1,114 @@
-# train.py
-import os
-import time
 import argparse
 import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
-from config import get_train_dataset, get_val_dataset
+from PIL import Image
 from model import AIModel
+from config import data_transforms
+import numpy as np
+import os
+import cv2
 
-# 单轮训练
-def train_one_epoch(model, loader, criterion, optimizer, device):
-    model.train()
-    total_loss, correct = 0.0, 0
-    for imgs, labels in tqdm(loader, desc="Train", leave=False):
-        imgs, labels = imgs.to(device), labels.to(device)
-        optimizer.zero_grad()
-        outputs = model(imgs)
-        loss = criterion(outputs, labels)
+class GradCAM:
+    def __init__(self, model, target_layer):
+        self.model = model
+        self.target_layer = target_layer
+        self.activations = None
+        self.gradients = None
+        target_layer.register_forward_hook(self.save_activation)
+        target_layer.register_full_backward_hook(self.save_gradient)
+
+    def save_activation(self, module, inp, out):
+        self.activations = out.detach()
+
+    def save_gradient(self, module, grad_input, grad_output):
+        self.gradients = grad_output[0].detach()
+
+    def __call__(self, input_tensor, class_idx=None):
+        self.model.zero_grad()
+
+        input_tensor.requires_grad = True
+        output = self.model(input_tensor)
+
+        if class_idx is None:
+            class_idx = output.argmax(dim=1).item()
+
+        loss = output[:, class_idx].sum()
         loss.backward()
-        optimizer.step()
-        total_loss += loss.item() * imgs.size(0)
-        preds = outputs.argmax(dim=1)
-        correct += (preds == labels).sum().item()
-    avg_loss = total_loss / len(loader.dataset)
-    acc = correct / len(loader.dataset)
-    return avg_loss, acc
 
-# 验证
-def validate(model, loader, criterion, device):
-    model.eval()
-    total_loss, correct = 0.0, 0
-    with torch.no_grad():
-        for imgs, labels in tqdm(loader, desc="Val", leave=False):
-            imgs, labels = imgs.to(device), labels.to(device)
-            outputs = model(imgs)
-            loss = criterion(outputs, labels)
-            total_loss += loss.item() * imgs.size(0)
-            preds = outputs.argmax(dim=1)
-            correct += (preds == labels).sum().item()
-    avg_loss = total_loss / len(loader.dataset)
-    acc = correct / len(loader.dataset)
-    return avg_loss, acc
+        weights = self.gradients.mean(dim=(2, 3), keepdim=True)
+        cam = (weights * self.activations).sum(dim=1)
+        cam = torch.relu(cam)
+        cam = torch.nn.functional.interpolate(
+            cam.unsqueeze(1),
+            size=input_tensor.shape[-2:], mode='bilinear', align_corners=False
+        )
+        cam = cam.squeeze().cpu().numpy()
+        cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
+        return cam
 
-# 主训练脚本
+
+def overlay_cam(img, cam, out_path, threshold=0.6):
+    if isinstance(img, Image.Image):
+        img = np.array(img)
+
+    h, w, _ = img.shape
+    cam_resized = cv2.resize(cam, (w, h))
+    cam_uint8 = np.uint8(255 * cam_resized)
+
+    heatmap = cv2.applyColorMap(cam_uint8, cv2.COLORMAP_JET)
+    heatmap = cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB)
+
+    mask = cam_resized > threshold
+    mask = mask.astype(np.uint8)
+    mask = np.expand_dims(mask, axis=-1)
+
+    overlay = img.astype(np.float32)
+    heatmap = heatmap.astype(np.float32)
+    overlay = overlay * (1 - mask * 0.5) + heatmap * (mask * 0.5)
+    overlay = np.clip(overlay, 0, 255).astype(np.uint8)
+
+    Image.fromarray(overlay).save(out_path)
+
+
 def main():
     parser = argparse.ArgumentParser()
-    default_device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    parser.add_argument('--device', default=default_device,
-                        help='training device, e.g. "cuda:0" or "cpu"')
-    parser.add_argument('--root', default='data/WebFG-400',
-                        help='dataset root directory')
-    parser.add_argument('--logdir', default='runs',
-                        help='directory for TensorBoard logs')
+    parser.add_argument('--input_dir', default='data/WebFG-400/train/000', help='Input image folder')
+    parser.add_argument('--output_dir', default='data/outputs_cam', help='Output image folder')
+    parser.add_argument('--weights', default='model/model.pth', help='Model weights')
+    parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     args = parser.parse_args()
 
+    os.makedirs(args.output_dir, exist_ok=True)
+
     device = torch.device(args.device)
-    if device.type == 'cuda':
-        torch.backends.cudnn.benchmark = True
-    root = args.root  # 根目录，包含 train/ 和 test/
-    print("device=", device)
-    writer = SummaryWriter(args.logdir)
-    train_set = get_train_dataset(root)
-    val_set   = get_val_dataset(root)
-    num_classes = len(train_set.classes)
+    model = AIModel('efficientnet-b0', num_classes=400).to(device)
+    model.load_state_dict(torch.load(args.weights, map_location=device))
+    model.eval()  # Set to eval mode
 
-    train_loader = DataLoader(train_set, batch_size=32, shuffle=True, num_workers=4)
-    val_loader   = DataLoader(val_set, batch_size=32, shuffle=False, num_workers=4)
+    cam_extractor = GradCAM(model, model.cbam)
 
-    model = AIModel('efficientnet-b0', num_classes).to(device)
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)
+    for filename in os.listdir(args.input_dir):
+        if not filename.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp')):
+            continue
 
-    best_acc = 0
-    for epoch in range(1, 101):
-        train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, device)
-        val_loss, val_acc = validate(model, val_loader, criterion, device)
-        print(f'Epoch {epoch:03d} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}')
-        writer.add_scalar('Loss/train', train_loss, epoch)
-        writer.add_scalar('Acc/train', train_acc, epoch)
-        writer.add_scalar('Loss/val', val_loss, epoch)
-        writer.add_scalar('Acc/val', val_acc, epoch)
-        writer.add_scalar('LR', optimizer.param_groups[0]['lr'], epoch)
-        for name, param in model.named_parameters():
-            writer.add_histogram(name, param, epoch)
-        scheduler.step()
-        # 保存最佳模型
-        if val_acc > best_acc:
-            best_acc = val_acc
-            torch.save(model.state_dict(), 'model/model.pth')
-    # 最终模型
-    torch.save(model.state_dict(), 'model/model_final.pth')
-    writer.close()
+        img_path = os.path.join(args.input_dir, filename)
+        name, ext = os.path.splitext(filename)
+        out_path = os.path.join(args.output_dir, name + '_cam.png')
+
+        try:
+            img = Image.open(img_path).convert('RGB')
+        except Exception as e:
+            print(f"[Error] Failed to load {img_path}: {e}")
+            continue
+
+        tensor = data_transforms['test'](img).unsqueeze(0).to(device)
+        tensor.requires_grad = True
+
+        try:
+            cam = cam_extractor(tensor)
+            overlay_cam(img, cam, out_path)
+            print(f"[OK] Saved: {out_path}")
+        except Exception as e:
+            print(f"[Error] Failed to process {filename}: {e}")
 
 if __name__ == '__main__':
     main()
