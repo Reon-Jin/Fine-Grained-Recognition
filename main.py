@@ -4,7 +4,7 @@ import torch
 from torch.utils.data import DataLoader
 import pandas as pd
 from config import *
-
+from model import AIModel
 root_dir = "data/WebFG-400/train"
 
 

@@ -27,7 +27,7 @@ train_dataset, val_dataset = random_split(
     [train_size, val_size],
     generator=torch.Generator().manual_seed(42),
 )
-val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False, num_workers=16)
+val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=4)
 current_time = datetime.now().strftime("%d-%H-%M-%S")
 log_dir = os.path.join("runs", current_time)
 writer = SummaryWriter(log_dir)
@@ -85,7 +85,8 @@ if __name__ == "__main__":
         train_dataset,
         batch_size=32,
         shuffle=True,
-        num_workers=8,
+        num_workers=4
+        ,
     )
     optimizer = optim.AdamW(model.parameters())
     scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
@@ -97,10 +98,9 @@ if __name__ == "__main__":
         print(f"Epoch {epoch + 1}/{num_epochs}")
         train(model, train_loader, criterion, optimizer, device, epoch)
         scheduler.step(epoch + epoch / len(train_loader))
-        if (epoch + 1) % 10 == 0:
-            acc = validate(model, val_loader, criterion, device, epoch)
-            if acc > best_acc:
-                best_acc = acc
-                torch.save(model.state_dict(), "model.pth")
+        acc = validate(model, val_loader, criterion, device, epoch)
+        if acc > best_acc:
+            best_acc = acc
+            torch.save(model.state_dict(), "model.pth")
     torch.save(model.state_dict(), "model_final.pth")
     writer.close()
