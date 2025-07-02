@@ -1,14 +1,37 @@
-# main.py
 import os
 import argparse
 import torch
 import pandas as pd
-from torch.utils.data import DataLoader
-from config import TestDataset, data_transforms, get_train_dataset
-from model import AIModel
 import csv
+from torch.utils.data import DataLoader, Dataset
+from torchvision import transforms
+from PIL import Image, ImageFile
+from model import BCNN
 
-# 推理
+# allow truncated images in inference as well
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+class TestDataset(Dataset):
+    def __init__(self, root_dir, transform=None):
+        self.root = root_dir
+        self.transform = transform
+        # list all image files
+        self.samples = sorted(
+            [f for f in os.listdir(root_dir) if os.path.isfile(os.path.join(root_dir, f))]
+        )
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        fname = self.samples[idx]
+        img_path = os.path.join(self.root, fname)
+        img = Image.open(img_path).convert('RGB')
+        if self.transform:
+            img = self.transform(img)
+        return img, fname
+
+# inference
 def predict(model, loader, device):
     model.eval()
     ids, preds = [], []
@@ -21,29 +44,29 @@ def predict(model, loader, device):
             preds.extend(pred)
     return ids, preds
 
-# 保存结果到 CSV
+# save to CSV
 def save_results(ids, preds, class_names, out_file):
-    labels = [f'="{str(class_names[int(p)]).zfill(4)}"' for p in preds]  # 添加=前缀
-    pd.DataFrame({'id': ids, 'label': labels}).to_csv(
+    labels = [f'="{class_names[int(p)].zfill(4)}"' for p in preds]
+    df = pd.DataFrame({'id': ids, 'label': labels})
+    df.to_csv(
         out_file,
         index=False,
         header=False,
-        quoting=csv.QUOTE_NONE,  # 不添加额外引号
+        quoting=csv.QUOTE_NONE,
         escapechar='\\'
     )
-
-    # 验证写入结果
+    # print first 5 lines to verify
     with open(out_file, 'r') as f:
         print("CSV前5行内容:")
         for _ in range(5):
             print(f.readline().strip())
 
-# 主推理脚本
+# main script
 def main():
     parser = argparse.ArgumentParser()
     default_device = 'cuda' if torch.cuda.is_available() else 'cpu'
     parser.add_argument('--device', default=default_device,
-                        help='inference device, e.g. "cuda:0" or "cpu"')
+                        help='inference device, e.g. cuda or cpu')
     parser.add_argument('--root', default='data/WebFG-400',
                         help='dataset root directory')
     parser.add_argument('--weights', default='model/model.pth',
@@ -53,19 +76,28 @@ def main():
     device = torch.device(args.device)
     if device.type == 'cuda':
         torch.backends.cudnn.benchmark = True
-    root = args.root
 
-    # 加载类别名称
-    train_set = get_train_dataset(root)
-    class_names = train_set.classes
+    # load class names from training split
+    from torchvision.datasets import ImageFolder
+    train_folder = ImageFolder(os.path.join(args.root, 'train'))
+    class_names = train_folder.classes
 
-    # 加载模型
+    # load model
     num_classes = len(class_names)
-    model = AIModel(num_classes=num_classes).to(device)
+    model = BCNN(num_classes=num_classes, unfreeze_last_stage=False).to(device)
     model.load_state_dict(torch.load(args.weights, map_location=device))
 
-    # 构建测试 DataLoader
-    test_set = TestDataset(os.path.join(root, 'test'), transform=data_transforms['test'])
+    # test transforms
+    test_transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                             std=[0.229, 0.224, 0.225])
+    ])
+
+    # test dataset & loader
+    test_dir = os.path.join(args.root, 'test')
+    test_set = TestDataset(test_dir, transform=test_transform)
     test_loader = DataLoader(test_set, batch_size=64, shuffle=False, num_workers=4)
 
     ids, preds = predict(model, test_loader, device)

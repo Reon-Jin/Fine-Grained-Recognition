@@ -1,107 +1,63 @@
-# config.py
-import os
-from PIL import Image, ImageFile
+from PIL import ImageFile
+# allow loading truncated images
 ImageFile.LOAD_TRUNCATED_IMAGES = True
+import os
 import torch
-from torch.utils.data import Dataset
-from torchvision import transforms
-from torchvision.datasets import ImageFolder
+from torchvision import transforms, datasets
+from torch.utils.data import DataLoader, Subset
 
-# Custom loader to handle RGBA images by converting them to RGB. This avoids
-# warnings during training when images contain an alpha channel.
-def rgb_loader(path):
-    with open(path, 'rb') as f:
-        img = Image.open(f)
-        return img.convert('RGB')
+# dataset path (all images)
+DATA_DIR = os.path.join('data', 'WebFG-400', 'train')
 
-_train_subset = None
-_val_subset = None
-
-
-class ImageFolderSubset(Dataset):
-    """Subset of ``ImageFolder`` that exposes ``classes`` attribute."""
-
-    def __init__(self, dataset, indices):
-        self.dataset = dataset
-        self.indices = indices
-        self.classes = dataset.classes
-        self.class_to_idx = dataset.class_to_idx
-
-    def __len__(self):
-        return len(self.indices)
-
-    def __getitem__(self, idx):
-        return self.dataset[self.indices[idx]]
+# training hyperparameters
+IMG_SIZE = 224
+BATCH_SIZE = 32
+NUM_WORKERS = 4
+LEARNING_RATE = 1e-4
+EPOCHS = 50
+VALID_SPLIT = 0.2  # proportion for validation
+SEED = 42
 
 
-def _prepare_datasets(root_dir):
-    """Split the training folder into train/val subsets (80/20)."""
-    global _train_subset, _val_subset
-    if _train_subset is not None and _val_subset is not None:
-        return
-
-    base_dir = os.path.join(root_dir, 'train')
-    full_dataset = ImageFolder(base_dir, loader=rgb_loader)
-    n_total = len(full_dataset)
-    val_len = int(n_total * 0.2)
-    train_len = n_total - val_len
-    generator = torch.Generator().manual_seed(42)
-    indices = torch.randperm(n_total, generator=generator).tolist()
-    train_indices = indices[:train_len]
-    val_indices = indices[train_len:]
-
-    train_set = ImageFolder(base_dir, transform=data_transforms['train'], loader=rgb_loader)
-    val_set = ImageFolder(base_dir, transform=data_transforms['test'], loader=rgb_loader)
-    _train_subset = ImageFolderSubset(train_set, train_indices)
-    _val_subset = ImageFolderSubset(val_set, val_indices)
-
-# 数据预处理管道
-data_transforms = {
-    'train': transforms.Compose([
-        transforms.Resize((256, 256)),
-        transforms.RandomResizedCrop(224, scale=(0.8, 1.0), ratio=(0.9, 1.1)),
-        transforms.RandomHorizontalFlip(p=0.5),
-        transforms.RandomRotation(degrees=10),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.1, hue=0.05),
-        transforms.RandomGrayscale(p=0.05),
+def get_dataloaders(data_dir=DATA_DIR):
+    # transforms
+    train_transforms = transforms.Compose([
+        transforms.Resize((IMG_SIZE, IMG_SIZE)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(15),
         transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406],
-                             [0.229, 0.224, 0.225]),
-    ]),
-    'test': transforms.Compose([
-        transforms.Resize((256, 256)),
-        transforms.CenterCrop(224),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    val_transforms = transforms.Compose([
+        transforms.Resize((IMG_SIZE, IMG_SIZE)),
         transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406],
-                             [0.229, 0.224, 0.225]),
-    ]),
-}
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
 
+    # get splits
+    base_dataset = datasets.ImageFolder(data_dir, transform=None)
+    dataset_size = len(base_dataset)
+    indices = torch.randperm(dataset_size, generator=torch.Generator().manual_seed(SEED)).tolist()
+    val_size = int(dataset_size * VALID_SPLIT)
+    train_indices = indices[val_size:]
+    val_indices = indices[:val_size]
 
-# 训练/验证集自动读取子目录作为类别
-def get_train_dataset(root_dir):
-    """Return the training subset (80%)."""
-    _prepare_datasets(root_dir)
-    return _train_subset
+    # create subsets with appropriate transforms
+    train_dataset = Subset(
+        datasets.ImageFolder(data_dir, transform=train_transforms), train_indices
+    )
+    val_dataset = Subset(
+        datasets.ImageFolder(data_dir, transform=val_transforms), val_indices
+    )
 
-def get_val_dataset(root_dir):
-    """Return the validation subset (20%)."""
-    _prepare_datasets(root_dir)
-    return _val_subset
+    # dataloaders
+    train_loader = DataLoader(
+        train_dataset, batch_size=BATCH_SIZE, shuffle=True,
+        num_workers=NUM_WORKERS, pin_memory=True
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=BATCH_SIZE, shuffle=False,
+        num_workers=NUM_WORKERS, pin_memory=True
+    )
 
-# 测试集：无标签，仅返回图像和文件名
-class TestDataset(Dataset):
-    def __init__(self, root_dir, transform):
-        self.root = root_dir
-        self.names = sorted(os.listdir(root_dir))
-        self.transform = transform
-
-    def __len__(self):
-        return len(self.names)
-
-    def __getitem__(self, idx):
-        fname = self.names[idx]
-        path = os.path.join(self.root, fname)
-        img = Image.open(path).convert('RGB')
-        # return the file name with extension for saving results
-        return self.transform(img), fname
+    return train_loader, val_loader

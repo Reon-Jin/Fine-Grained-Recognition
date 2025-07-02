@@ -1,120 +1,108 @@
 import os
-import argparse
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
-from config import get_train_dataset, get_val_dataset
-from model import AIModel
+import torch.optim as optim
 from tqdm import tqdm
+from torch.utils.tensorboard import SummaryWriter
+from model import BCNN
+from config import get_dataloaders, LEARNING_RATE, EPOCHS
+from PIL import ImageFile, Image
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+import warnings
+warnings.filterwarnings("ignore", message="Palette images with Transparency expressed in bytes")
 
-def train_one_epoch(model, loader, criterion, optimizer, device):
-    model.train()
-    total_loss, correct = 0.0, 0
-    for imgs, labels in tqdm(loader, desc="Training", ncols=100, colour="white"):
-        imgs, labels = imgs.to(device), labels.to(device)
-        optimizer.zero_grad()
-        outputs = model(imgs)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
-        total_loss += loss.item() * imgs.size(0)
-        preds = outputs.argmax(dim=1)
-        correct += (preds == labels).sum().item()
-    avg_loss = total_loss / len(loader.dataset)
-    acc = correct / len(loader.dataset)
-    return avg_loss, acc
 
-def validate(model, loader, criterion, device):
-    model.eval()
-    total_loss, correct = 0.0, 0
-    with torch.no_grad():
-        for imgs, labels in tqdm(loader, desc="Validation", ncols=100, colour="white"):
+
+def train():
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # data loaders
+    train_loader, val_loader = get_dataloaders()
+
+    # determine number of classes
+    num_classes = len(train_loader.dataset.dataset.classes)
+
+    # model, criterion, optimizer
+    model = BCNN(num_classes=num_classes, unfreeze_last_stage=True)
+    model = model.to(device)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+
+    # tensorboard
+    writer = SummaryWriter()
+
+    # prepare model save directory
+    save_dir = 'model'
+    os.makedirs(save_dir, exist_ok=True)
+    best_acc = 0.0
+
+    for epoch in range(1, EPOCHS + 1):
+        model.train()
+        running_loss = 0.0
+        correct = 0
+        total = 0
+
+        # Training with progress bar
+        train_bar = tqdm(train_loader, desc=f"Epoch {epoch}/{EPOCHS} [Train]", ncols=100)
+        for imgs, labels in train_bar:
             imgs, labels = imgs.to(device), labels.to(device)
+            optimizer.zero_grad()
             outputs = model(imgs)
             loss = criterion(outputs, labels)
-            total_loss += loss.item() * imgs.size(0)
-            preds = outputs.argmax(dim=1)
+            loss.backward()
+            optimizer.step()
+
+            batch_size = imgs.size(0)
+            running_loss += loss.item() * batch_size
+            _, preds = torch.max(outputs, 1)
             correct += (preds == labels).sum().item()
-    avg_loss = total_loss / len(loader.dataset)
-    acc = correct / len(loader.dataset)
-    return avg_loss, acc
+            total += batch_size
 
-def main():
-    parser = argparse.ArgumentParser()
-    default_device = "cuda" if torch.cuda.is_available() else "cpu"
-    parser.add_argument("--device", default=default_device, help="training device, e.g. 'cuda:0' or 'cpu'" )
-    parser.add_argument("--root", default="data/WebFG-400", help="dataset root directory")
-    parser.add_argument("--epochs", type=int, default=50, help="max training epochs")
-    parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--patience", type=int, default=5, help="early stop patience")
-    parser.add_argument("--logdir", default="runs", help="tensorboard log directory")
-    args = parser.parse_args()
+            # update progress bar
+            train_bar.set_postfix(loss=f"{loss.item():.4f}", acc=f"{correct/total:.4f}")
 
-    device = torch.device(args.device)
-    if device.type == "cuda":
-        torch.backends.cudnn.benchmark = True
+        epoch_loss = running_loss / total
+        epoch_acc = correct / total
 
-    os.makedirs("model", exist_ok=True)
+        writer.add_scalar('Train/Loss', epoch_loss, epoch)
+        writer.add_scalar('Train/Acc', epoch_acc, epoch)
 
-    # Load datasets
-    train_set = get_train_dataset(args.root)
-    val_set = get_val_dataset(args.root)
-    num_classes = len(train_set.classes)
+        # validation with progress bar
+        if val_loader:
+            model.eval()
+            val_loss = 0.0
+            val_correct = 0
+            val_total = 0
+            val_bar = tqdm(val_loader, desc=f"Epoch {epoch}/{EPOCHS} [Val]  ", ncols=100)
+            with torch.no_grad():
+                for imgs, labels in val_bar:
+                    imgs, labels = imgs.to(device), labels.to(device)
+                    outputs = model(imgs)
+                    loss = criterion(outputs, labels)
 
-    train_loader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_set, batch_size=args.batch_size, shuffle=False, num_workers=4)
+                    batch_size = imgs.size(0)
+                    val_loss += loss.item() * batch_size
+                    _, preds = torch.max(outputs, 1)
+                    val_correct += (preds == labels).sum().item()
+                    val_total += batch_size
 
-    # Build model
-    model = AIModel(num_classes=num_classes).to(device)
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+                    # update progress bar
+                    val_bar.set_postfix(loss=f"{loss.item():.4f}", acc=f"{val_correct/val_total:.4f}")
 
-    # 更平滑的 LR 调度：CosineAnnealingLR
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=args.epochs,
-        eta_min=1e-6
-    )
+            val_epoch_loss = val_loss / val_total
+            val_epoch_acc = val_correct / val_total
+            writer.add_scalar('Val/Loss', val_epoch_loss, epoch)
+            writer.add_scalar('Val/Acc', val_epoch_acc, epoch)
 
-    writer = SummaryWriter(args.logdir)
+            # save best model
+            if val_epoch_acc > best_acc:
+                best_acc = val_epoch_acc
+                save_path = os.path.join(save_dir, 'model.pth')
+                torch.save(model.state_dict(), save_path)
+                tqdm.write(f"Saved best model with Val Acc: {best_acc:.4f} to {save_path}")
 
-    best_acc = 0.0
-    epochs_no_improve = 0
-
-    # Training loop
-    for epoch in range(1, args.epochs + 1):
-        train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, device)
-        val_loss, val_acc = validate(model, val_loader, criterion, device)
-
-        # Log training metrics
-        print(f"Epoch {epoch:03d} | "
-              f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | "
-              f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}")
-        writer.add_scalar("Loss/train", train_loss, epoch)
-        writer.add_scalar("Accuracy/train", train_acc, epoch)
-        writer.add_scalar("Loss/val", val_loss, epoch)
-        writer.add_scalar("Accuracy/val", val_acc, epoch)
-        writer.add_scalar("LR", optimizer.param_groups[0]['lr'], epoch)
-
-        # Step scheduler
-        scheduler.step()
-
-        # Early stopping
-        if val_acc > best_acc:
-            best_acc = val_acc
-            epochs_no_improve = 0
-            torch.save(model.state_dict(), os.path.join("model", "model.pth"))
-        else:
-            epochs_no_improve += 1
-
-        if epochs_no_improve > args.patience:
-            print("Early stopping triggered")
-            break
-
-    torch.save(model.state_dict(), os.path.join("model", "model_final.pth"))
     writer.close()
 
-if __name__ == "__main__":
-    main()
+
+if __name__ == '__main__':
+    train()

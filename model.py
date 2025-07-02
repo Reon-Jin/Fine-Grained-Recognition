@@ -1,157 +1,66 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-from torchvision import models
-
-
-n_features_1 = 512  # resnet18-2048, resnet34-2048, resnet50-8192
-n_features_2 = 512
-fmap_size = 14
+import timm
 
 
-def setup_resnet(unfreeze_layers=None):
-    resnet = models.resnet34(pretrained=True)
-    
-    if unfreeze_layers is not None:
-        for name, param in resnet.named_parameters():
-            layer_name = str(name).split('.')
-            if layer_name[0] in unfreeze_layers:
-                param.requires_grad = True
-            else:
-                param.requires_grad = False
+def create_swin_features(unfreeze_last_stage=False):
+    """
+    Create a Swin-Tiny feature extractor with features_only.
+    If unfreeze_last_stage is True, unfreeze the final transformer stage and its norm layer.
+    """
+    model = timm.create_model(
+        'swin_tiny_patch4_window7_224',
+        pretrained=True,
+        features_only=True,
+        out_indices=(3,)
+    )
+    # Freeze all parameters
+    for p in model.parameters():
+        p.requires_grad = False
 
-    else:
-        for param in resnet.parameters():
-            param.requires_grad = False
-    
-    layers = list(resnet.children())[:-2]
-    features = nn.Sequential(*layers).cuda()
-
-    return features
-
-
-def setup_VGG(unfreeze_layers=None):
-    vgg = models.vgg16(pretrained=True)
-
-    if unfreeze_layers is not None:
-        for name, param in vgg.named_parameters():
-            layer_name = str(name).split('.')
-            if int(layer_name[1]) >= unfreeze_layers:
-                param.requires_grad = True
-            else:
-                param.requires_grad = False
-
-    else:
-        for param in vgg.parameters():
-            param.requires_grad = False  # False to freeze all
-    
-    layers = list(vgg.children())[:-2]
-    features = nn.Sequential(*layers).cuda()
-
-    return features
-
-
-class simple_model(nn.Module):
-    def __init__(self, n_classes=100, model='vgg16') -> None:
-        super(simple_model, self).__init__()
-        self.n_classes = n_classes
-
-        if model == 'vgg16':
-            model = models.vgg16(pretrained=True)
-        elif model == 'resnet34':
-            model = models.resnet34(pretrained=True)
-        elif model == 'resnet50':
-            model = models.resnet50(pretrained=True)
-        elif model == 'inception_v3':
-            model = models.inception_v3(pretrained=True)
-        else:
-            raise ValueError('model must be specific')
-
-        for param in model.parameters():
-            param.requires_grad = False
-        # for name, param in model.named_parameters():
-        #     layer_name = str(name).split('.')
-        #     if layer_name[0] >= 'layer4':
-        #         param.requires_grad = True
-        #     else:
-        #         param.requires_grad = False
-
-        layers = list(model.children())[:-2]
-        self.features = nn.Sequential(*layers).cuda()
-        
-        self.fc = nn.Linear(model.fc.in_features * fmap_size ** 2, n_classes)
-
-        # Initialize the fc
-        nn.init.xavier_normal_(self.fc.weight.data)
-        
-        if self.fc.bias is not None:
-            torch.nn.init.constant_(self.fc.bias.data, val=0)
-    
-    def forward(self, x):
-        ## X: bs, 3, 448, 448
-        ## N = bs
-        N = x.size()[0]
-        assert x.size() == (N, 3, 448, 448)
-
-        x = self.features(x)
-        x = x.view(N, -1)
-
-        x = F.normalize(x)
-        x = self.fc(x)
-
-        return x
+    if unfreeze_last_stage:
+        # Unfreeze the last transformer stage and normalization
+        for name, p in model.named_parameters():
+            if name.startswith('layers.3') or 'norm' in name:
+                p.requires_grad = True
+    return model
 
 
 class BCNN(nn.Module):
-    def __init__(self, n_classes=100):
-        
-        super(BCNN, self).__init__()
-        
-        self.f1 = setup_VGG(unfreeze_layers=26)
-        self.f2 = setup_VGG()
+    def __init__(self, num_classes=400, drop_prob=0.5, unfreeze_last_stage=False):
+        super().__init__()
+        # Two feature extractors: one fine-tuned, one frozen
+        self.f1 = create_swin_features(unfreeze_last_stage=unfreeze_last_stage)
+        self.f2 = create_swin_features(unfreeze_last_stage=False)
 
-        self.fc = nn.Linear(n_features_1 * n_features_2, n_classes)
-        self.dropout = nn.Dropout(0.5)
-        
-        # Initialize the fc layers.
-        nn.init.xavier_normal_(self.fc.weight.data)
-        
-        if self.fc.bias is not None:
-            torch.nn.init.constant_(self.fc.bias.data, val=0)
-        
+        # Use LazyLinear to adapt to actual bilinear feature size
+        self.fc = nn.Sequential(
+            nn.Dropout(p=drop_prob),
+            nn.LazyLinear(num_classes)
+        )
+
     def forward(self, x):
-        
-        ## X: bs, 3, 448, 448; N = bs
-        N = x.size()[0]
-        assert x.size() == (N, 3, 448, 448)
-        
-        ## x : bs, 512, 14, 14
-        x_fa = self.f1(x)
-        x_fb = self.f2(x)
-        assert x_fa.size() == (N, n_features_1, fmap_size, fmap_size)
-        
-        # bs, 512, 14*2
-        x_fa = x_fa.view(N, n_features_1, fmap_size ** 2)
-        x_fb = x_fb.view(N, n_features_2, fmap_size ** 2)
-        # x_fa = self.dropout(x_fa)
-        # x_fb = self.dropout(x_fb)
-        assert x_fa.size() == (N, n_features_1, fmap_size ** 2)
-        
-        # Batch matrix multiplication
-        x = torch.bmm(x_fa, torch.transpose(x_fb, 1, 2))/ (fmap_size ** 2) 
-        assert x.size() == (N, n_features_1, n_features_2)
+        # branch 1
+        x1 = self.f1(x)[0]
+        # branch 2
+        x2 = self.f2(x)[0]
 
-        x = x.view(N, n_features_1 * n_features_2)
-        x = torch.sqrt(x + 1e-5)
-        x = F.normalize(x)
-        
-        x = self.dropout(x)
-        x = self.fc(x)
-        
-        return x
+        # reshape to [B, C, N]
+        B, C, H, W = x1.size()
+        x1 = x1.view(B, C, H * W)
+        x2 = x2.view(B, C, H * W)
 
+        # bilinear pooling: compute outer product at each spatial location and average
+        phi = torch.bmm(x1, x2.transpose(1, 2)) / (H * W)  # [B, C, C]
 
-if __name__ == '__main__':
-    model = BCNN()
-    print(model)
+        # flatten
+        phi = phi.view(B, C * C)
+
+        # signed square-root normalization and L2 normalization
+        phi = torch.sign(phi) * torch.sqrt(torch.abs(phi) + 1e-12)
+        phi = F.normalize(phi, dim=1)
+
+        # final classification
+        out = self.fc(phi)
+        return out
