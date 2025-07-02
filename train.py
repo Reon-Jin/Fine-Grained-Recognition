@@ -1,108 +1,107 @@
-import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.utils.data import DataLoader, RandomSampler
 from tqdm import tqdm
+from model import AIModel, BaggingModel
+from config import *
 from torch.utils.tensorboard import SummaryWriter
-from model import BCNN
-from config import get_dataloaders, LEARNING_RATE, EPOCHS
-from PIL import ImageFile, Image
-ImageFile.LOAD_TRUNCATED_IMAGES = True
-import warnings
-warnings.filterwarnings("ignore", message="Palette images with Transparency expressed in bytes")
+from datetime import datetime
+
+root_dir = "/root/autodl-tmp/c"
+train_dataset = AIDataset(root_dir=root_dir, transform=data_transforms["train"])
+val_dataset = train_dataset
+val_loader = DataLoader(val_dataset, batch_size=128, shuffle=False, num_workers=16)
+current_time = datetime.now().strftime("%d-%H:%M:%S")
+log_dir = f"/root/tf-logs/{current_time}"
+writer = SummaryWriter(log_dir)
 
 
+def train(model, dataloader, criterion, optimizer, device, epoch, model_index):
+    model.train()
+    running_loss = 0.0
+    for inputs, labels in tqdm(dataloader, desc=f"Training Model {model_index}"):
+        inputs, labels = inputs.to(device), labels.float().unsqueeze(1).to(device)
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+        running_loss += loss.item() * inputs.size(0)
+    epoch_loss = running_loss / len(dataloader.dataset)
+    writer.add_scalar(f"Loss/Train_Model_{model_index}", epoch_loss, epoch + 1)
+    print(f"Model {model_index} Training Loss: {epoch_loss:.5f}")
 
-def train():
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # data loaders
-    train_loader, val_loader = get_dataloaders()
-
-    # determine number of classes
-    num_classes = len(train_loader.dataset.dataset.classes)
-
-    # model, criterion, optimizer
-    model = BCNN(num_classes=num_classes, unfreeze_last_stage=True)
-    model = model.to(device)
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
-
-    # tensorboard
-    writer = SummaryWriter()
-
-    # prepare model save directory
-    save_dir = 'model'
-    os.makedirs(save_dir, exist_ok=True)
-    best_acc = 0.0
-
-    for epoch in range(1, EPOCHS + 1):
-        model.train()
-        running_loss = 0.0
-        correct = 0
-        total = 0
-
-        # Training with progress bar
-        train_bar = tqdm(train_loader, desc=f"Epoch {epoch}/{EPOCHS} [Train]", ncols=100)
-        for imgs, labels in train_bar:
-            imgs, labels = imgs.to(device), labels.to(device)
-            optimizer.zero_grad()
-            outputs = model(imgs)
+def validate(models, dataloader, criterion, device, epoch):
+    bagging_model = BaggingModel(models).to(device)
+    bagging_model.eval()
+    running_loss = 0.0
+    correct_predictions = 0
+    total_predictions = 0
+    with torch.no_grad():
+        for inputs, labels in tqdm(dataloader, desc="Validating"):
+            inputs, labels = inputs.to(device), labels.float().unsqueeze(1).to(device)
+            outputs = bagging_model(inputs)
             loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
+            running_loss += loss.item() * inputs.size(0)
+            predicted_labels = (outputs > 0.5).float()
+            correct_predictions += (predicted_labels == labels).sum().item()
+            total_predictions += labels.size(0)
+    epoch_loss = running_loss / len(dataloader.dataset)
+    accuracy = correct_predictions / total_predictions
+    writer.add_scalar("Loss/Validation", epoch_loss, epoch + 1)
+    writer.add_scalar("Accuracy/Validation", accuracy, epoch + 1)
+    print(f"Validation Loss: {epoch_loss:.4f}, Accuracy: {accuracy:.4f}\n")
+    return bagging_model
 
-            batch_size = imgs.size(0)
-            running_loss += loss.item() * batch_size
-            _, preds = torch.max(outputs, 1)
-            correct += (preds == labels).sum().item()
-            total += batch_size
 
-            # update progress bar
-            train_bar.set_postfix(loss=f"{loss.item():.4f}", acc=f"{correct/total:.4f}")
-
-        epoch_loss = running_loss / total
-        epoch_acc = correct / total
-
-        writer.add_scalar('Train/Loss', epoch_loss, epoch)
-        writer.add_scalar('Train/Acc', epoch_acc, epoch)
-
-        # validation with progress bar
-        if val_loader:
-            model.eval()
-            val_loss = 0.0
-            val_correct = 0
-            val_total = 0
-            val_bar = tqdm(val_loader, desc=f"Epoch {epoch}/{EPOCHS} [Val]  ", ncols=100)
-            with torch.no_grad():
-                for imgs, labels in val_bar:
-                    imgs, labels = imgs.to(device), labels.to(device)
-                    outputs = model(imgs)
-                    loss = criterion(outputs, labels)
-
-                    batch_size = imgs.size(0)
-                    val_loss += loss.item() * batch_size
-                    _, preds = torch.max(outputs, 1)
-                    val_correct += (preds == labels).sum().item()
-                    val_total += batch_size
-
-                    # update progress bar
-                    val_bar.set_postfix(loss=f"{loss.item():.4f}", acc=f"{val_correct/val_total:.4f}")
-
-            val_epoch_loss = val_loss / val_total
-            val_epoch_acc = val_correct / val_total
-            writer.add_scalar('Val/Loss', val_epoch_loss, epoch)
-            writer.add_scalar('Val/Acc', val_epoch_acc, epoch)
-
-            # save best model
-            if val_epoch_acc > best_acc:
-                best_acc = val_epoch_acc
-                save_path = os.path.join(save_dir, 'model.pth')
-                torch.save(model.state_dict(), save_path)
-                tqdm.write(f"Saved best model with Val Acc: {best_acc:.4f} to {save_path}")
-
+if __name__ == "__main__":
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    models = [
+        AIModel(efficientnet_type="efficientnet-b0").to(device),
+        AIModel(efficientnet_type="efficientnet-b0").to(device),
+        AIModel(efficientnet_type="efficientnet-b1").to(device),
+        AIModel(efficientnet_type="efficientnet-b1").to(device),
+        AIModel(efficientnet_type="efficientnet-b1").to(device),
+    ]
+    train_loaders = []
+    optimizers = []
+    schedulers = []
+    criterions = []
+    for i in range(len(models)):
+        sampler = RandomSampler(train_dataset, replacement=True)
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=64,
+            sampler=sampler,
+            num_workers=16,
+        )
+        train_loaders.append(train_loader)
+        optimizer = optim.AdamW(models[i].parameters())
+        scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer, T_0=10, T_mult=2
+        )
+        optimizers.append(optimizer)
+        schedulers.append(scheduler)
+        criterion = nn.BCELoss()
+        criterions.append(criterion)
+    num_epochs = 100
+    for epoch in range(num_epochs):
+        print(f"Epoch {epoch + 1}/{num_epochs}")
+        for i, model in enumerate(models):
+            train(
+                model,
+                train_loaders[i],
+                criterions[i],
+                optimizers[i],
+                device,
+                epoch,
+                i + 1,
+            )
+            schedulers[i].step(epoch + epoch / len(train_loaders[i]))
+        if (epoch + 1) % 10 == 0:
+            bagging_model = validate(models, val_loader, criterions[0], device, epoch)
+    bagging_model = BaggingModel(models).to(device)
+    torch.save(bagging_model, "model.pth")
     writer.close()
-
-
-if __name__ == '__main__':
-    train()
