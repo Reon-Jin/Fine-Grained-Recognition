@@ -80,7 +80,8 @@ if __name__ == "__main__":
     val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=4)
 
     # Optimizer, scheduler, loss
-    optimizer = optim.AdamW(model.parameters())
+    optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-4)
+
     scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
     criterion = nn.CrossEntropyLoss()
 

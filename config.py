@@ -3,7 +3,7 @@ import json
 from torchvision import transforms
 from torch.utils.data import Dataset
 from PIL import Image, ImageFile
-
+from torchvision.transforms import InterpolationMode
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 # 通用设置
@@ -14,13 +14,17 @@ ROOT_DIR = "data/WebFG-400"  # 根目录，包含 train/、train.json、val.json
 # 图像增强与归一化
 data_transforms = {
     "train": transforms.Compose([
-        transforms.Resize((IMG_SIZE, IMG_SIZE)),
+        transforms.RandomResizedCrop(IMG_SIZE, scale=(0.8, 1.0), interpolation=InterpolationMode.BICUBIC),
+        transforms.RandomHorizontalFlip(),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+        transforms.RandomRotation(10),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406],
-                             [0.229, 0.224, 0.225])
+                             [0.229, 0.224, 0.225]),
+        transforms.RandomErasing(p=0.3, scale=(0.02, 0.15), ratio=(0.3, 3.3), value='random')
     ]),
     "val": transforms.Compose([
-        transforms.Resize((IMG_SIZE, IMG_SIZE)),
+        transforms.Resize((IMG_SIZE, IMG_SIZE), interpolation=InterpolationMode.BICUBIC),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406],
                              [0.229, 0.224, 0.225])
