@@ -43,20 +43,25 @@ class TestDataset(Dataset):
         return image, id
 
 
-class AIDataset(Dataset):
+class MultiClassDataset(Dataset):
+    """Generic dataset for multi-class classification."""
+
     def __init__(self, root_dir, transform=None):
         self.root_dir = root_dir
         self.transform = transform
-        self.labels = {"ai": 1, "real": 0}
+        self.classes = [
+            d
+            for d in sorted(os.listdir(root_dir))
+            if os.path.isdir(os.path.join(root_dir, d))
+        ]
         self.image_paths = []
         self.labels_list = []
-        for split in ["train"]:
-            for label in ["ai", "real"]:
-                folder_path = os.path.join(root_dir, split, label)
-                for img_name in os.listdir(folder_path):
-                    img_path = os.path.join(folder_path, img_name)
-                    self.image_paths.append(img_path)
-                    self.labels_list.append(self.labels[label])
+        for idx, class_name in enumerate(self.classes):
+            folder_path = os.path.join(root_dir, class_name)
+            for img_name in os.listdir(folder_path):
+                img_path = os.path.join(folder_path, img_name)
+                self.image_paths.append(img_path)
+                self.labels_list.append(idx)
 
     def __len__(self):
         return len(self.image_paths)
@@ -68,3 +73,4 @@ class AIDataset(Dataset):
             image = self.transform(image)
         label = self.labels_list[idx]
         return image, label
+
