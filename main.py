@@ -5,8 +5,8 @@ import torch
 from torch.utils.data import DataLoader
 import pandas as pd
 from config import *
-
-
+from model import AIModel
+root_dir = "data/WebFG-400/train"
 def predict(model, dataloader, device):
     model.eval()
     predictions = []
@@ -15,7 +15,7 @@ def predict(model, dataloader, device):
         for inputs, names in dataloader:
             inputs = inputs.to(device)
             outputs = model(inputs)
-            preds = outputs.float().squeeze().cpu().numpy()
+            preds = torch.argmax(outputs, dim=1).cpu().numpy()
             predictions.extend(preds)
             filenames.extend(names)
     return filenames, predictions
@@ -23,7 +23,6 @@ def predict(model, dataloader, device):
 
 def save_results(filenames, predictions, output_path):
     results = pd.DataFrame({"id": filenames, "label": predictions})
-    results["label"] = results["label"].apply(lambda x: 1 if x >= 0.5 else 0)
     results.sort_values(by="id", inplace=True)
     results.to_csv(output_path, index=False, header=False)
 
@@ -36,7 +35,9 @@ if __name__ == "__main__":
         test_dataset, batch_size=256, shuffle=False, num_workers=16
     )
     model_path = "model.pth"
-    model = torch.load(model_path).to(device)
+    model = AIModel(num_classes=len(os.listdir(root_dir)))
+    model.load_state_dict(torch.load(model_path))
+    model = model.to(device)
     filenames, predictions = predict(model, test_loader, device)
     output_path = "../cla_pre.csv"
     save_results(filenames, predictions, output_path)
