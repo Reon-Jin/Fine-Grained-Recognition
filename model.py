@@ -21,9 +21,9 @@ class BilinearCNN(nn.Module):
         self.stream1 = EfficientNet.from_pretrained('efficientnet-b0')
         self.stream1._fc = nn.Identity()
 
-        # — Stream2: ResNet-50 —
-        resnet50 = models.resnet50(pretrained=True)
-        modules = list(resnet50.children())[:-2]
+        # — Stream2: ResNet-18 —
+        resnet18 = models.resnet18(pretrained=True)
+        modules = list(resnet18.children())[:-2]
         self.stream2 = nn.Sequential(*modules)
         if freeze_stream2:
             for p in self.stream2.parameters():
@@ -31,7 +31,7 @@ class BilinearCNN(nn.Module):
 
         # 通道数
         C1 = self.stream1._bn1.num_features  # 1536
-        C2 = 2048                             # ResNet-50 输出通道
+        C2 = 512                             # ResNet-50 输出通道
 
         # 降维 1x1 Conv
         self.reduce1 = nn.Sequential(
