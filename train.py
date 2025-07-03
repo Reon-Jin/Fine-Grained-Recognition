@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from PIL import ImageFile
 
-from model import MultiStreamFeatureExtractor  # 新模型
+from model import MultiStreamFeatureExtractor  # 新模型结构（只保留 3 个流）
 from config import get_train_dataset, get_val_dataset
 
 # 忽略 PIL 警告
@@ -86,18 +86,19 @@ if __name__ == "__main__":
         val_dataset, batch_size=32, shuffle=False, num_workers=4, pin_memory=True
     )
 
+    # 创建模型（只保留stream0/1/2）
     model = MultiStreamFeatureExtractor(
         num_classes=num_classes,
         reduction_dim=512,
         dropout_rate=0.5,
-        freeze_streams=[1,2,3,4]
+        unfreeze_blocks_stream4=3  # 解冻EfficientNet-B0最后3个block
     ).to(device)
 
     optimizer = optim.AdamW(
         model.parameters(), lr=1e-4, weight_decay=1e-4
     )
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='max', factor=0.2, patience=3, verbose=True
+        optimizer, mode='max', factor=0.2, patience=3
     )
 
     criterion = nn.CrossEntropyLoss()
