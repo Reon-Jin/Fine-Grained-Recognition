@@ -18,7 +18,7 @@ class BilinearCNN(nn.Module):
     ):
         super().__init__()
         # — Stream1: EfficientNet-B3 —
-        self.stream1 = EfficientNet.from_pretrained('efficientnet-b0')
+        self.stream1 = EfficientNet.from_pretrained('efficientnet-b3')
         self.stream1._fc = nn.Identity()
 
         # — Stream2: ResNet-50 —
