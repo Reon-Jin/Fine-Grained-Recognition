@@ -34,8 +34,16 @@ class BilinearCNN(nn.Module):
         C2 = 2048                             # ResNet-50 输出通道
 
         # 降维 1x1 Conv
-        self.reduce1 = nn.Conv2d(C1, reduction_dim, kernel_size=1, bias=False)
-        self.reduce2 = nn.Conv2d(C2, reduction_dim, kernel_size=1, bias=False)
+        self.reduce1 = nn.Sequential(
+            nn.Conv2d(C1, reduction_dim, kernel_size=1, bias=False),
+            nn.BatchNorm2d(reduction_dim),
+            nn.ReLU(inplace=True)
+        )
+        self.reduce2 = nn.Sequential(
+            nn.Conv2d(C2, reduction_dim, kernel_size=1, bias=False),
+            nn.BatchNorm2d(reduction_dim),
+            nn.ReLU(inplace=True)
+        )
 
         # Dropout + 分类头
         self.dropout = nn.Dropout(p=dropout_rate)
