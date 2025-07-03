@@ -10,7 +10,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from PIL import ImageFile
 
-from model import BilinearCNN        # 改成新模型
+from model import MultiStreamFeatureExtractor  # 新模型
 from config import get_train_dataset, get_val_dataset
 
 # 忽略 PIL 那个警告
@@ -97,14 +97,17 @@ if __name__ == "__main__":
     )
 
     # 模型
-    model = BilinearCNN(
+    model = MultiStreamFeatureExtractor(
         num_classes=num_classes,
+        reduction_dim=512,
         dropout_rate=0.5,
-        freeze_stream2=False     # 可根据需要微调
+        freeze_streams=[1,2,3,4]  # 后4条流冻结，仅微调流0
     ).to(device)
 
     # 优化器、调度器、损失
-    optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-4)
+    optimizer = optim.AdamW(
+        model.parameters(), lr=1e-4, weight_decay=1e-4
+    )
     scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
         optimizer, T_0=10, T_mult=2
     )
