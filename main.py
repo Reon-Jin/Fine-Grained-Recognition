@@ -3,7 +3,7 @@ import torch
 from torch.utils.data import DataLoader
 import pandas as pd
 from config import *  # 包含 data_transforms, TestDataset 等
-from model import BilinearCNN
+from model import MultiStreamFeatureExtractor
 
 
 def predict(model, dataloader, device):
@@ -55,7 +55,7 @@ if __name__ == "__main__":
     idx_to_class = {v: k for k, v in train_dataset.class_to_idx.items()}
 
     # 模型构建与加载
-    model = BilinearCNN(num_classes=len(idx_to_class))
+    model = MultiStreamFeatureExtractor(num_classes=len(idx_to_class))
     model.load_state_dict(torch.load(model_path, map_location=device))
     model = model.to(device)
 
