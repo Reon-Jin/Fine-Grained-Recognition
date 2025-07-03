@@ -1,103 +1,118 @@
+import os
+from datetime import datetime
+import warnings
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from model import AIModel
-from config import *
-from torch.utils.tensorboard import SummaryWriter
-from datetime import datetime
-import os
 from PIL import ImageFile
+
+from model import MultiStreamFeatureExtractor  # 新模型结构（只保留 3 个流）
+from config import get_train_dataset, get_val_dataset
+
+# 忽略 PIL 警告
 ImageFile.LOAD_TRUNCATED_IMAGES = True
-import warnings
-warnings.filterwarnings("ignore", message="Palette images with Transparency expressed in bytes should be converted to RGBA images")
+warnings.filterwarnings(
+    "ignore",
+    message="Palette images with Transparency expressed in bytes should be converted to RGBA images"
+)
 
-# Log directory
-current_time = datetime.now().strftime("%d-%H-%M-%S")
-log_dir = os.path.join("runs", current_time)
-writer = SummaryWriter(log_dir)
-
-
-def train(model, dataloader, criterion, optimizer, device, epoch):
+def train_epoch(model, dataloader, criterion, optimizer, device, epoch):
     model.train()
     running_loss = 0.0
-    correct_predictions = 0
-    total_predictions = 0
-    for inputs, labels in tqdm(dataloader, desc=f"Epoch {epoch + 1}"):
+    correct = 0
+    total = 0
+
+    progress_bar = tqdm(dataloader, desc=f"Train Epoch {epoch+1}", ncols=100, colour="white")
+    for inputs, labels in progress_bar:
         inputs, labels = inputs.to(device), labels.to(device)
         optimizer.zero_grad()
+
         outputs = model(inputs)
         loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
+
         running_loss += loss.item() * inputs.size(0)
-        _, preds = torch.max(outputs, 1)
-        correct_predictions += (preds == labels).sum().item()
-        total_predictions += labels.size(0)
-    epoch_loss = running_loss / len(dataloader.dataset)
-    epoch_acc = correct_predictions / total_predictions
-    writer.add_scalar("Loss/Train", epoch_loss, epoch + 1)
-    writer.add_scalar("Accuracy/Train", epoch_acc, epoch + 1)
-    print(f"Train Loss: {epoch_loss:.4f}, Accuracy: {epoch_acc:.4f}")
+        preds = outputs.argmax(dim=1)
+        correct += (preds == labels).sum().item()
+        total += labels.size(0)
 
+        current_loss = running_loss / total
+        current_acc = correct / total
+        progress_bar.set_postfix(loss=f"{current_loss:.4f}", acc=f"{current_acc:.4f}")
 
-def validate(model, dataloader, criterion, device, epoch):
+    print(f"[Train]  Loss: {current_loss:.4f}  Acc: {current_acc:.4f}")
+    return current_loss, current_acc
+
+def validate_epoch(model, dataloader, criterion, device, epoch):
     model.eval()
     running_loss = 0.0
-    correct_predictions = 0
-    total_predictions = 0
+    correct = 0
+    total = 0
+
+    progress_bar = tqdm(dataloader, desc="Validate", ncols=100, colour="white")
     with torch.no_grad():
-        for inputs, labels in tqdm(dataloader, desc="Validating"):
+        for inputs, labels in progress_bar:
             inputs, labels = inputs.to(device), labels.to(device)
             outputs = model(inputs)
             loss = criterion(outputs, labels)
-            running_loss += loss.item() * inputs.size(0)
-            _, preds = torch.max(outputs, 1)
-            correct_predictions += (preds == labels).sum().item()
-            total_predictions += labels.size(0)
-    epoch_loss = running_loss / len(dataloader.dataset)
-    accuracy = correct_predictions / total_predictions
-    writer.add_scalar("Loss/Validation", epoch_loss, epoch + 1)
-    writer.add_scalar("Accuracy/Validation", accuracy, epoch + 1)
-    print(f"Validation Loss: {epoch_loss:.4f}, Accuracy: {accuracy:.4f}\n")
-    return accuracy
 
+            running_loss += loss.item() * inputs.size(0)
+            preds = outputs.argmax(dim=1)
+            correct += (preds == labels).sum().item()
+            total += labels.size(0)
+
+            current_loss = running_loss / total
+            current_acc = correct / total
+            progress_bar.set_postfix(loss=f"{current_loss:.4f}", acc=f"{current_acc:.4f}")
+
+    print(f"[Valid]  Loss: {current_loss:.4f}  Acc: {current_acc:.4f}\n")
+    return current_loss, current_acc
 
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Load dataset from JSON
     train_dataset = get_train_dataset()
-    val_dataset = get_val_dataset()
+    val_dataset   = get_val_dataset()
+    num_classes   = len(train_dataset.classes)
 
-    # Automatically get number of classes
-    num_classes = len(train_dataset.classes)
+    train_loader = DataLoader(
+        train_dataset, batch_size=32, shuffle=True, num_workers=4, pin_memory=True
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=32, shuffle=False, num_workers=4, pin_memory=True
+    )
 
-    # Build model
-    model = AIModel(num_classes=num_classes).to(device)
+    # 创建模型（只保留stream0/1/2）
+    model = MultiStreamFeatureExtractor(
+        num_classes=num_classes,
+        reduction_dim=512,
+        dropout_rate=0.5,
+        unfreeze_blocks_stream4=3  # 解冻EfficientNet-B0最后3个block
+    ).to(device)
 
-    # DataLoaders
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=4)
+    optimizer = optim.AdamW(
+        model.parameters(), lr=1e-4, weight_decay=1e-4
+    )
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='max', factor=0.2, patience=3
+    )
 
-    # Optimizer, scheduler, loss
-    optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-4)
-
-    scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
     criterion = nn.CrossEntropyLoss()
-
-    # Train loop
-    num_epochs = 100
+    os.makedirs("model", exist_ok=True)
     best_acc = 0.0
+    num_epochs = 50
+
     for epoch in range(num_epochs):
-        print(f"Epoch {epoch + 1}/{num_epochs}")
-        train(model, train_loader, criterion, optimizer, device, epoch)
-        scheduler.step(epoch + epoch / len(train_loader))
-        acc = validate(model, val_loader, criterion, device, epoch)
-        if acc > best_acc:
-            best_acc = acc
+        print(f"=== Epoch {epoch+1}/{num_epochs} ===")
+        train_epoch(model, train_loader, criterion, optimizer, device, epoch)
+        scheduler.step(epoch + epoch/len(train_loader))
+        _, val_acc = validate_epoch(model, val_loader, criterion, device, epoch)
+
+        if val_acc > best_acc:
+            best_acc = val_acc
             torch.save(model.state_dict(), "model/model.pth")
         torch.save(model.state_dict(), "model/model_final.pth")
-
-    writer.close()
