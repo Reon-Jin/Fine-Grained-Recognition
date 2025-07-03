@@ -7,5 +7,4 @@ tqdm
 pandas
 matplotlib
 opencv-python
-tensorboard
 efficientnet_pytorch
