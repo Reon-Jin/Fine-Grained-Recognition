@@ -5,7 +5,7 @@ import torch
 from torch.utils.data import DataLoader
 import pandas as pd
 from config import *
-from model import AIModel
+from model import BilinearCNN
 root_dir = "data/WebFG-400/train"
 def predict(model, dataloader, device):
     model.eval()
