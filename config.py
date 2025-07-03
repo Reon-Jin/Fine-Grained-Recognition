@@ -29,6 +29,12 @@ data_transforms = {
         transforms.Normalize([0.485, 0.456, 0.406],
                              [0.229, 0.224, 0.225])
     ]),
+    "test": transforms.Compose([
+        transforms.Resize((IMG_SIZE, IMG_SIZE), interpolation=InterpolationMode.BICUBIC),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406],
+                            [0.229, 0.224, 0.225])
+    ]),
 }
 
 
@@ -78,6 +84,26 @@ class MultiClassDataset(Dataset):
         label = self.labels_list[idx]
         return image, label
 
+class TestDataset(Dataset):
+    """Test dataset that reads all images from a folder without labels."""
+    def __init__(self, test_dir, transform=None):
+        self.image_paths = [
+            os.path.join(test_dir, fname)
+            for fname in os.listdir(test_dir)
+            if fname.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp'))
+        ]
+        self.image_names = [os.path.basename(p) for p in self.image_paths]
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.image_paths)
+
+    def __getitem__(self, idx):
+        img_path = self.image_paths[idx]
+        image = Image.open(img_path).convert("RGB")
+        if self.transform:
+            image = self.transform(image)
+        return image, self.image_names[idx]
 
 def get_train_dataset():
     return MultiClassDataset(
