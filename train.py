@@ -6,25 +6,18 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from PIL import ImageFile
 
 from model import MultiStreamFeatureExtractor  # 新模型
 from config import get_train_dataset, get_val_dataset
 
-# 忽略 PIL 那个警告
+# 忽略 PIL 警告
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 warnings.filterwarnings(
     "ignore",
     message="Palette images with Transparency expressed in bytes should be converted to RGBA images"
 )
-
-# TensorBoard log dir
-current_time = datetime.now().strftime("%Y%m%d-%H%M%S")
-log_dir = os.path.join("runs", current_time)
-os.makedirs(log_dir, exist_ok=True)
-writer = SummaryWriter(log_dir)
 
 def train_epoch(model, dataloader, criterion, optimizer, device, epoch):
     model.train()
@@ -32,7 +25,8 @@ def train_epoch(model, dataloader, criterion, optimizer, device, epoch):
     correct = 0
     total = 0
 
-    for inputs, labels in tqdm(dataloader, desc=f"Train Epoch {epoch+1}", ncols=100):
+    progress_bar = tqdm(dataloader, desc=f"Train Epoch {epoch+1}", ncols=100, colour="white")
+    for inputs, labels in progress_bar:
         inputs, labels = inputs.to(device), labels.to(device)
         optimizer.zero_grad()
 
@@ -46,13 +40,12 @@ def train_epoch(model, dataloader, criterion, optimizer, device, epoch):
         correct += (preds == labels).sum().item()
         total += labels.size(0)
 
-    epoch_loss = running_loss / total
-    epoch_acc = correct / total
+        current_loss = running_loss / total
+        current_acc = correct / total
+        progress_bar.set_postfix(loss=f"{current_loss:.4f}", acc=f"{current_acc:.4f}")
 
-    writer.add_scalar("Loss/Train", epoch_loss, epoch + 1)
-    writer.add_scalar("Accuracy/Train", epoch_acc, epoch + 1)
-    print(f"[Train]  Loss: {epoch_loss:.4f}  Acc: {epoch_acc:.4f}")
-    return epoch_loss, epoch_acc
+    print(f"[Train]  Loss: {current_loss:.4f}  Acc: {current_acc:.4f}")
+    return current_loss, current_acc
 
 def validate_epoch(model, dataloader, criterion, device, epoch):
     model.eval()
@@ -60,8 +53,9 @@ def validate_epoch(model, dataloader, criterion, device, epoch):
     correct = 0
     total = 0
 
+    progress_bar = tqdm(dataloader, desc="Validate", ncols=100, colour="white")
     with torch.no_grad():
-        for inputs, labels in tqdm(dataloader, desc="Validate", ncols=100):
+        for inputs, labels in progress_bar:
             inputs, labels = inputs.to(device), labels.to(device)
             outputs = model(inputs)
             loss = criterion(outputs, labels)
@@ -71,24 +65,20 @@ def validate_epoch(model, dataloader, criterion, device, epoch):
             correct += (preds == labels).sum().item()
             total += labels.size(0)
 
-    epoch_loss = running_loss / total
-    epoch_acc = correct / total
+            current_loss = running_loss / total
+            current_acc = correct / total
+            progress_bar.set_postfix(loss=f"{current_loss:.4f}", acc=f"{current_acc:.4f}")
 
-    writer.add_scalar("Loss/Val", epoch_loss, epoch + 1)
-    writer.add_scalar("Accuracy/Val", epoch_acc, epoch + 1)
-    print(f"[Valid]  Loss: {epoch_loss:.4f}  Acc: {epoch_acc:.4f}\n")
-    return epoch_loss, epoch_acc
+    print(f"[Valid]  Loss: {current_loss:.4f}  Acc: {current_acc:.4f}\n")
+    return current_loss, current_acc
 
 if __name__ == "__main__":
-    # 设备
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # 数据集
     train_dataset = get_train_dataset()
     val_dataset   = get_val_dataset()
     num_classes   = len(train_dataset.classes)
 
-    # DataLoader
     train_loader = DataLoader(
         train_dataset, batch_size=32, shuffle=True, num_workers=4, pin_memory=True
     )
@@ -96,24 +86,21 @@ if __name__ == "__main__":
         val_dataset, batch_size=32, shuffle=False, num_workers=4, pin_memory=True
     )
 
-    # 模型
     model = MultiStreamFeatureExtractor(
         num_classes=num_classes,
         reduction_dim=512,
         dropout_rate=0.5,
-        freeze_streams=[1,2,3,4]  # 后4条流冻结，仅微调流0
+        freeze_streams=[1,2,3,4]
     ).to(device)
 
-    # 优化器、调度器、损失
     optimizer = optim.AdamW(
         model.parameters(), lr=1e-4, weight_decay=1e-4
     )
-    scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
-        optimizer, T_0=10, T_mult=2
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='max', factor=0.2, patience=3, verbose=True
     )
-    criterion = nn.CrossEntropyLoss()
 
-    # 确保保存模型目录存在
+    criterion = nn.CrossEntropyLoss()
     os.makedirs("model", exist_ok=True)
     best_acc = 0.0
     num_epochs = 50
@@ -124,12 +111,7 @@ if __name__ == "__main__":
         scheduler.step(epoch + epoch/len(train_loader))
         _, val_acc = validate_epoch(model, val_loader, criterion, device, epoch)
 
-        # 保存最优模型
         if val_acc > best_acc:
             best_acc = val_acc
             torch.save(model.state_dict(), "model/model.pth")
-
-        # 每 epoch 都保存最新模型
         torch.save(model.state_dict(), "model/model_final.pth")
-
-    writer.close()
