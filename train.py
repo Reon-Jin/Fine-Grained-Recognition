@@ -100,7 +100,7 @@ if __name__ == "__main__":
     model = BilinearCNN(
         num_classes=num_classes,
         dropout_rate=0.5,
-        freeze_stream2=True     # 可根据需要微调
+        freeze_stream2=False     # 可根据需要微调
     ).to(device)
 
     # 优化器、调度器、损失
