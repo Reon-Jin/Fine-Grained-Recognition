@@ -90,17 +90,17 @@ if __name__ == "__main__":
 
     # DataLoader
     train_loader = DataLoader(
-        train_dataset, batch_size=32, shuffle=True, num_workers=4, pin_memory=True
+        train_dataset, batch_size=128, shuffle=True, num_workers=8, pin_memory=True
     )
     val_loader = DataLoader(
-        val_dataset, batch_size=32, shuffle=False, num_workers=4, pin_memory=True
+        val_dataset, batch_size=128, shuffle=False, num_workers=8, pin_memory=True
     )
 
     # 模型
     model = BilinearCNN(
         num_classes=num_classes,
         dropout_rate=0.5,
-        freeze_stream2=True     # 可根据需要微调
+        freeze_stream2=False     # 可根据需要微调
     ).to(device)
 
     # 优化器、调度器、损失
