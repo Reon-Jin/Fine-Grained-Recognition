@@ -8,3 +8,4 @@ visualize_cam.py
 .vs/
 yolov5su.pt
 parts/
+submission/

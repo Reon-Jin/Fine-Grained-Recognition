@@ -41,7 +41,7 @@ if __name__ == "__main__":
     # 路径配置
     root_dir = "data/WebFG-400/train"
     test_dir = "data/WebFG-400/test"  # 测试图片文件夹路径
-    model_path = "model/model.pth"
+    model_path = "model/del_noise_97/model.pth"
     output_path = "submission.csv"
 
     # 加载测试集
