@@ -39,7 +39,7 @@ def train_epoch(model, dataloader, criterion, optimizer, device, epoch):
         preds = outputs.argmax(dim=1)
         correct += (preds == labels).sum().item()
         total += labels.size(0)
-
+ 
         current_loss = running_loss / total
         current_acc = correct / total
         progress_bar.set_postfix(loss=f"{current_loss:.4f}", acc=f"{current_acc:.4f}")
