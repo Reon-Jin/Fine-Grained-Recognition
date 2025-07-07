@@ -5,3 +5,7 @@ submission.csv
 __pycache__/
 runs/
 visualize_cam.py
+.vs/
+yolov5su.pt
+parts/
+submission/
