@@ -47,6 +47,7 @@ def train_epoch(model, dataloader, criterion, optimizer, device, epoch):
     print(f"[Train]  Loss: {current_loss:.4f}  Acc: {current_acc:.4f}")
     return current_loss, current_acc
 
+
 def validate_epoch(model, dataloader, criterion, device, epoch):
     model.eval()
     running_loss = 0.0
@@ -72,6 +73,7 @@ def validate_epoch(model, dataloader, criterion, device, epoch):
     print(f"[Valid]  Loss: {current_loss:.4f}  Acc: {current_acc:.4f}\n")
     return current_loss, current_acc
 
+
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -80,13 +82,14 @@ if __name__ == "__main__":
     num_classes   = len(train_dataset.classes)
 
     train_loader = DataLoader(
-        train_dataset, batch_size=32, shuffle=True, num_workers=4, pin_memory=True
+        train_dataset, batch_size=64, shuffle=True, num_workers=4, pin_memory=True
     )
     val_loader = DataLoader(
-        val_dataset, batch_size=32, shuffle=False, num_workers=4, pin_memory=True
+        val_dataset, batch_size=64, shuffle=False, num_workers=4, pin_memory=True
     )
     print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
     print(f"Train batches: {len(train_loader)}, Val batches: {len(val_loader)}")
+
     # 创建模型（只保留stream0/1/2）
     model = MultiStreamFeatureExtractor(
         num_classes=num_classes,
@@ -99,7 +102,7 @@ if __name__ == "__main__":
         model.parameters(), lr=1e-4, weight_decay=1e-4
     )
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='max', factor=0.2, patience=3
+        optimizer, mode='max', factor=0.1, patience=2
     )
 
     criterion = nn.CrossEntropyLoss()
@@ -113,7 +116,11 @@ if __name__ == "__main__":
         scheduler.step(epoch + epoch/len(train_loader))
         _, val_acc = validate_epoch(model, val_loader, criterion, device, epoch)
 
+        # 保存最佳模型
         if val_acc > best_acc:
             best_acc = val_acc
             torch.save(model.state_dict(), "model/model.pth")
-        torch.save(model.state_dict(), "model/model_final.pth")
+        # 保存最新模型
+        torch.save(model.state_dict(), "model/model_latest.pth")
+
+    print("Training complete. Best Val Acc: {:.4f}".format(best_acc))
