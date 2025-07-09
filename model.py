@@ -8,37 +8,51 @@ class MultiStreamFeatureExtractor(nn.Module):
     """
     精简版多流特征提取网络：
     保留3条流：
-      0: EfficientNet-B1（微调）
-      3: SqueezeNet1_0.features（冻结）
-      4: EfficientNet-B0（部分解冻）
+      0: EfficientNet-B1（微调最后3个block）
+      1: SqueezeNet1_0.features（冻结）
+      2: EfficientNet-B0（部分解冻）
     """
     def __init__(
         self,
         num_classes,
         reduction_dim=512,
         dropout_rate=0.5,
-        unfreeze_blocks_stream4: int = 3  # 解冻EfficientNet-B0的最后几层
+        unfreeze_blocks_stream0: int = 3,  # 解冻EfficientNet-B1的最后几个block
+        unfreeze_blocks_stream2: int = 3   # 解冻EfficientNet-B0的最后几个block
     ):
         super().__init__()
 
         # 定义保留的3条流
         self.streams = nn.ModuleList([
-            EfficientNet.from_pretrained('efficientnet-b1'),                       # stream[0]
-            models.squeezenet1_0(pretrained=True).features,                        # stream[1]（原stream3）
-            EfficientNet.from_pretrained('efficientnet-b0')                        # stream[2]（原stream4）
+            EfficientNet.from_pretrained('efficientnet-b1'),  # stream[0]
+            models.squeezenet1_0(pretrained=True).features,   # stream[1]
+            EfficientNet.from_pretrained('efficientnet-b0')  # stream[2]
         ])
 
         # 去掉EfficientNet的分类头
         self.streams[0]._fc = nn.Identity()
         self.streams[2]._fc = nn.Identity()
 
+        # 冻结EfficientNet-B1除最后unfreeze_blocks_stream0个block外的所有参数
+        total_blocks_b1 = len(self.streams[0]._blocks)
+        # 全部先冻结
+        for p in self.streams[0].parameters():
+            p.requires_grad = False
+        # 然后只解冻最后几个block
+        for i in range(total_blocks_b1 - unfreeze_blocks_stream0, total_blocks_b1):
+            for p in self.streams[0]._blocks[i].parameters():
+                p.requires_grad = True
+        # （可根据需要，也可以解冻conv_head和_bn1）
+
         # 冻结SqueezeNet
         for p in self.streams[1].parameters():
             p.requires_grad = False
 
-        # 解冻EfficientNet-B0最后几个block（如最后3个）
-        total_blocks = len(self.streams[2]._blocks)
-        for i in range(total_blocks - unfreeze_blocks_stream4, total_blocks):
+        # 解冻EfficientNet-B0最后unfreeze_blocks_stream2个block
+        total_blocks_b0 = len(self.streams[2]._blocks)
+        for p in self.streams[2].parameters():
+            p.requires_grad = False
+        for i in range(total_blocks_b0 - unfreeze_blocks_stream2, total_blocks_b0):
             for p in self.streams[2]._blocks[i].parameters():
                 p.requires_grad = True
 

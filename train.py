@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from PIL import ImageFile
 
-from model import MultiStreamFeatureExtractor  # 新模型结构（只保留 3 个流）
+from model import MultiStreamFeatureExtractor  # 新模型结构，仅保留 3 条流
 from config import get_train_dataset, get_val_dataset
 
 # 忽略 PIL 警告
@@ -80,18 +80,20 @@ if __name__ == "__main__":
     num_classes   = len(train_dataset.classes)
 
     train_loader = DataLoader(
-        train_dataset, batch_size=32, shuffle=True, num_workers=4, pin_memory=True
+        train_dataset, batch_size=64, shuffle=True, num_workers=4, pin_memory=True
     )
     val_loader = DataLoader(
-        val_dataset, batch_size=32, shuffle=False, num_workers=4, pin_memory=True
+        val_dataset, batch_size=64, shuffle=False, num_workers=4, pin_memory=True
     )
-
-    # 创建模型（只保留stream0/1/2）
+    print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
+    print(f"Train batches: {len(train_loader)}, Val batches: {len(val_loader)}")
+    # 创建模型，指定解冻参数块
     model = MultiStreamFeatureExtractor(
         num_classes=num_classes,
         reduction_dim=512,
         dropout_rate=0.5,
-        unfreeze_blocks_stream4=3  # 解冻EfficientNet-B0最后3个block
+        unfreeze_blocks_stream0=3,  # 解冻EfficientNet-B1最后3个block
+        unfreeze_blocks_stream2=3   # 解冻EfficientNet-B0最后3个block
     ).to(device)
 
     optimizer = optim.AdamW(

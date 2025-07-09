@@ -1,5 +1,3 @@
-# config.py
-
 import os
 import json
 from collections import defaultdict
@@ -21,7 +19,7 @@ yolo_model = YOLO('yolov5su.pt')  # 可替换为更轻量的 'yolov5n.pt'
 IMG_SIZE = 224
 NUM_CLASSES = 400
 ROOT_DIR = "data/WebFG-400"
-FILTERED_JSON = os.path.join(ROOT_DIR, "filtered_train.json")
+FILTERED_TRAIN = os.path.join(ROOT_DIR, "filtered_train.json")
 
 # 图像增强与归一化
 data_transforms = {
@@ -49,16 +47,16 @@ data_transforms = {
     ]),
 }
 
-
 class MultiClassDataset(Dataset):
-    """多分类数据集：先用 YOLO 过滤噪声，然后按 JSON 列表加载。"""
+    """多分类数据集：
+    训练集会用 YOLO 过滤噪声并缓存；
+    验证集和测试集直接按 JSON 路径加载，无缓存。"""
 
     def __init__(self, root_dir, json_file, transform=None):
         self.root_dir = root_dir
         self.transform = transform
 
         train_folder = os.path.join(root_dir, "train")
-        # 自动扫描所有细分类别文件夹
         self.classes = sorted([
             d for d in os.listdir(train_folder)
             if os.path.isdir(os.path.join(train_folder, d))
@@ -69,55 +67,58 @@ class MultiClassDataset(Dataset):
         with open(json_file, 'r') as f:
             relative_paths = json.load(f)
 
-        # 如果已有缓存，直接加载
-        if os.path.exists(FILTERED_JSON):
-            filtered = json.load(open(FILTERED_JSON, 'r'))
-            print(f"加载缓存的过滤列表：{FILTERED_JSON}")
+        # 如果是验证集或测试集，直接使用原始列表
+        if os.path.basename(json_file).startswith("val"):
+            filtered = relative_paths
         else:
-            # 否则按组过滤一次
-            grouped = defaultdict(list)
-            for rel in relative_paths:
-                top_cls = os.path.normpath(rel).split(os.sep)[0]
-                grouped[top_cls].append(rel)
+            # 对训练集做过滤和缓存
+            if os.path.exists(FILTERED_TRAIN):
+                filtered = json.load(open(FILTERED_TRAIN, 'r'))
+                print(f"加载缓存的训练过滤列表：{FILTERED_TRAIN}")
+            else:
+                # 分类统计再过滤
+                grouped = defaultdict(list)
+                for rel in relative_paths:
+                    top_cls = os.path.normpath(rel).split(os.sep)[0]
+                    grouped[top_cls].append(rel)
 
-            filtered = []
-            for cls_name, rels in grouped.items():
-                counts = {'bird': 0, 'car': 0, 'plane': 0}
-                cache = {}
-                for rel in rels:
-                    full_path = os.path.join(train_folder, rel)
-                    try:
-                        # 关闭日志，限制最多两个检测框
-                        results = yolo_model(full_path, verbose=False, max_det=2)
-                        if results and len(results) > 0:
-                            res = results[0]
-                            if hasattr(res, 'boxes') and len(res.boxes) > 0:
-                                detected = {res.names[int(c)] for c in res.boxes.cls.cpu().numpy()}
-                                if 'bird' in detected:
-                                    counts['bird'] += 1; cache[rel] = 'bird'
-                                elif 'car' in detected:
-                                    counts['car'] += 1; cache[rel] = 'car'
-                                elif 'airplane' in detected:
-                                    counts['plane'] += 1; cache[rel] = 'plane'
+                filtered = []
+                for cls_name, rels in grouped.items():
+                    counts = {'bird': 0, 'car': 0, 'plane': 0}
+                    cache = {}
+                    for rel in rels:
+                        full_path = os.path.join(train_folder, rel)
+                        try:
+                            results = yolo_model(full_path, verbose=False, max_det=2)
+                            if results and len(results) > 0:
+                                res = results[0]
+                                if hasattr(res, 'boxes') and len(res.boxes) > 0:
+                                    detected = {res.names[int(c)] for c in res.boxes.cls.cpu().numpy()}
+                                    if 'bird' in detected:
+                                        counts['bird'] += 1; cache[rel] = 'bird'
+                                    elif 'car' in detected:
+                                        counts['car'] += 1; cache[rel] = 'car'
+                                    elif 'airplane' in detected:
+                                        counts['plane'] += 1; cache[rel] = 'plane'
+                                    else:
+                                        cache[rel] = None
                                 else:
                                     cache[rel] = None
                             else:
                                 cache[rel] = None
-                        else:
+                        except Exception:
                             cache[rel] = None
-                    except Exception:
-                        cache[rel] = None
 
-                main = max(counts, key=counts.get)
-                if counts[main] > 0:
-                    filtered += [r for r in rels if cache.get(r) == main]
-                else:
-                    filtered += rels
+                    main = max(counts, key=counts.get)
+                    if counts[main] > 0:
+                        filtered += [r for r in rels if cache.get(r) == main]
+                    else:
+                        filtered += rels
 
-            # 保存缓存，下次直接加载
-            with open(FILTERED_JSON, 'w') as wf:
-                json.dump(filtered, wf)
-            print(f"过滤结果已保存到：{FILTERED_JSON}")
+                # 保存缓存，下次直接加载
+                with open(FILTERED_TRAIN, 'w') as wf:
+                    json.dump(filtered, wf)
+                print(f"过滤结果已保存到：{FILTERED_TRAIN}")
 
         # 构建最终的路径和标签列表
         self.image_paths = []
@@ -135,7 +136,6 @@ class MultiClassDataset(Dataset):
         if self.transform:
             img = self.transform(img)
         return img, self.labels_list[idx]
-
 
 class TestDataset(Dataset):
     """测试集：无标签，仅按路径加载所有图像。"""
@@ -156,14 +156,12 @@ class TestDataset(Dataset):
             img = self.transform(img)
         return img, os.path.basename(self.image_paths[idx])
 
-
 def get_train_dataset():
     return MultiClassDataset(
         root_dir=ROOT_DIR,
         json_file=os.path.join(ROOT_DIR, "train.json"),
         transform=data_transforms["train"]
     )
-
 
 def get_val_dataset():
     return MultiClassDataset(
