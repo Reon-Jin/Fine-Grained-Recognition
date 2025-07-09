@@ -85,7 +85,8 @@ if __name__ == "__main__":
     val_loader = DataLoader(
         val_dataset, batch_size=32, shuffle=False, num_workers=4, pin_memory=True
     )
-
+    print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
+    print(f"Train batches: {len(train_loader)}, Val batches: {len(val_loader)}")
     # 创建模型（只保留stream0/1/2）
     model = MultiStreamFeatureExtractor(
         num_classes=num_classes,
