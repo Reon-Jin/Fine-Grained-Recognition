@@ -100,7 +100,7 @@ if __name__ == "__main__":
         model.parameters(), lr=1e-4, weight_decay=1e-4
     )
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='max', factor=0.2, patience=3
+        optimizer, mode='max', factor=0.2, patience=1
     )
 
     criterion = nn.CrossEntropyLoss()
