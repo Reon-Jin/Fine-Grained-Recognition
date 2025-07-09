@@ -1,26 +1,76 @@
+# train.py
+
 import os
-from datetime import datetime
 import warnings
+from datetime import datetime
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from PIL import ImageFile
+import numpy as np
+from sklearn.mixture import GaussianMixture
 
 from model import MultiStreamFeatureExtractor  # 新模型结构（只保留 3 个流）
-from config import get_train_dataset, get_val_dataset
+from config import (
+    get_train_dataset,
+    get_val_dataset,
+    TEMPERATURE,
+    LAMBDA_NTC,
+    LAMBDA_KL,
+    WEIGHT_THRESHOLD
+)
 
-# 忽略 PIL 警告
+# 忽略因损坏图像导致的 PIL 警告
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 warnings.filterwarnings(
     "ignore",
     message="Palette images with Transparency expressed in bytes should be converted to RGBA images"
 )
 
+
+class NTCLoss(nn.Module):
+    """Noise-Tolerated Supervised Contrastive Loss"""
+    def __init__(self, temperature=TEMPERATURE):
+        super().__init__()
+        self.temperature = temperature
+
+    def forward(self, z_proj, labels, omega):
+        B = z_proj.size(0)
+        # 归一化
+        z = F.normalize(z_proj, dim=1)
+        # 相似度矩阵
+        sim = (z @ z.T) / self.temperature
+        # 同类 mask
+        mask = labels.unsqueeze(1).eq(labels.unsqueeze(0)).float()
+        # 排除自身
+        exp_sim = torch.exp(sim) * (1 - torch.eye(B, device=z.device))
+        # log-prob
+        log_prob = sim - torch.log(exp_sim.sum(dim=1, keepdim=True) + 1e-8)
+        # 对每对(i,j)取 min(ω_i, ω_j)
+        w = torch.min(omega.unsqueeze(1), omega.unsqueeze(0))
+        # 同类对平均 log-prob
+        denom = mask.sum(dim=1) - 1 + 1e-8
+        mean_log_pos = (w * mask * log_prob).sum(dim=1) / denom
+        return - mean_log_pos.mean()
+
+
+class StochasticModuleKL(nn.Module):
+    """KL(N(mu,σ)||N(0,I)) 正则项"""
+    def forward(self, mu, logvar):
+        # KL = -0.5 * E[1 + logvar - mu^2 - exp(logvar)]
+        return -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
+
+
 def train_epoch(model, dataloader, criterion, optimizer, device, epoch):
     model.train()
+    ce_base = nn.CrossEntropyLoss(reduction='none')
+    ntc_fn = NTCLoss()
+    kl_fn = StochasticModuleKL()
+
     running_loss = 0.0
     correct = 0
     total = 0
@@ -30,12 +80,36 @@ def train_epoch(model, dataloader, criterion, optimizer, device, epoch):
         inputs, labels = inputs.to(device), labels.to(device)
         optimizer.zero_grad()
 
+        # —— 前向分类 & small-loss 选样 ——
         outputs = model(inputs)
-        loss = criterion(outputs, labels)
+        ce_losses = ce_base(outputs, labels)  # (B,)
+        with torch.no_grad():
+            arr = ce_losses.cpu().numpy().reshape(-1, 1)
+            gmm = GaussianMixture(n_components=2, max_iter=100).fit(arr)
+            clean_comp = np.argmin(gmm.means_)
+            probs = gmm.predict_proba(arr)[:, clean_comp]
+            omega = torch.from_numpy(probs).to(device)
+            omega = torch.where(omega > WEIGHT_THRESHOLD, torch.ones_like(omega), omega)
+
+        # —— 软标签分类损失 ——
+        prob = F.softmax(outputs, dim=1)
+        num_classes = outputs.size(1)
+        y_one = F.one_hot(labels, num_classes).float()
+        y_soft = omega.unsqueeze(1) * y_one + (1 - omega).unsqueeze(1) * prob
+        loss_cls = -(y_soft * torch.log(prob.clamp(min=1e-8))).sum(dim=1).mean()
+
+        # —— SNSCL 对比 & 随机模块 KL ——
+        z, z_proj, z_stoch, mu, logvar = model.forward_contrastive(inputs)
+        loss_ntc = ntc_fn(z_proj, labels, omega)
+        loss_kl = kl_fn(mu, logvar)
+
+        # —— 总损失 & 更新 ——
+        loss = loss_cls + LAMBDA_NTC * loss_ntc + LAMBDA_KL * loss_kl
         loss.backward()
         optimizer.step()
 
-        running_loss += loss.item() * inputs.size(0)
+        # —— 累计统计 & 进度条更新 ——
+        running_loss += loss_cls.item() * inputs.size(0)
         preds = outputs.argmax(dim=1)
         correct += (preds == labels).sum().item()
         total += labels.size(0)
@@ -82,69 +156,54 @@ if __name__ == "__main__":
     num_classes = len(train_dataset.classes)
 
     train_loader = DataLoader(
-        train_dataset,
-        batch_size=32,
-        shuffle=True,
-        num_workers=4,
-        pin_memory=True
+        train_dataset, batch_size=64, shuffle=True, num_workers=4, pin_memory=True
     )
     val_loader = DataLoader(
-        val_dataset,
-        batch_size=32,
-        shuffle=False,
-        num_workers=4,
-        pin_memory=True
+        val_dataset, batch_size=64, shuffle=False, num_workers=4, pin_memory=True
     )
 
     print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
     print(f"Train batches: {len(train_loader)}, Val batches: {len(val_loader)}")
 
-    # 创建模型（只保留stream0/1/2）
+    # 初始化模型
     model = MultiStreamFeatureExtractor(
         num_classes=num_classes,
         reduction_dim=512,
         dropout_rate=0.5,
-        unfreeze_blocks_stream4=3  # 解冻EfficientNet-B0最后3个block
+        unfreeze_blocks_stream4=3
     ).to(device)
 
-    # 尝试从已有的 .pth 文件中加载权重，继续训练
-    checkpoint_path = "model/del_noise_97/model.pth"
-    best_acc = 0.0
-    if os.path.isfile(checkpoint_path):
-        print(f"Loading checkpoint from {checkpoint_path}... ")
-        state_dict = torch.load(checkpoint_path, map_location=device)
-        model.load_state_dict(state_dict)
-        best_acc = 0.97  # 已有最高97%准确率
-        print(f"Resumed from checkpoint with best_acc = {best_acc:.4f}")
+    # 检查是否存在已训练的模型
+    model_path = "model/model.pth"
+    if os.path.exists(model_path):
+        print(f"加载已训练模型: {model_path}")
+        model.load_state_dict(torch.load(model_path, map_location=device))
+        print("模型加载完成，继续训练...")
+    else:
+        print("未找到已训练模型，从头开始训练...")
 
-    # 优化器和学习率调度器参数（微调推荐更低学习率、更小衰减）
     optimizer = optim.AdamW(
-        model.parameters(),
-        lr=1e-5,
-        weight_decay=1e-5
+        model.parameters(), lr=1e-4, weight_decay=1e-4
     )
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode='max',
-        factor=0.1,
-        patience=2,
-        min_lr=1e-7,
+        optimizer, mode='max', factor=0.1, patience=2
     )
 
     criterion = nn.CrossEntropyLoss()
     os.makedirs("model", exist_ok=True)
+    best_acc = 0.0
     num_epochs = 50
 
     for epoch in range(num_epochs):
         print(f"=== Epoch {epoch+1}/{num_epochs} ===")
         train_epoch(model, train_loader, criterion, optimizer, device, epoch)
-        # 将验证准确率传入 scheduler
+        # 保持原调度调用方式不变
+        scheduler.step(epoch + epoch/len(train_loader))
         _, val_acc = validate_epoch(model, val_loader, criterion, device, epoch)
-        scheduler.step(val_acc)
 
-        # 保存最优模型
         if val_acc > best_acc:
             best_acc = val_acc
             torch.save(model.state_dict(), "model/model.pth")
-        # 保存最新模型
-        torch.save(model.state_dict(), "model/model_final.pth")
+        torch.save(model.state_dict(), "model/model_latest.pth")
+
+    print("Training complete. Best Val Acc: {:.4f}".format(best_acc))
