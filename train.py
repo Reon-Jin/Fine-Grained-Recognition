@@ -69,7 +69,7 @@ def main():
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     net = net.to(device)
 
-    # 损失函数
+    # 损失函数 & AMP
     criterion = torch.nn.CrossEntropyLoss().to(device)
     scaler = amp.GradScaler()
 
@@ -96,15 +96,21 @@ def main():
     ]
 
     best_val_acc = 0.0
-    final_epoch = None
 
     # 训练循环
     for epoch in range(start_epoch, 500):
         _print('--' * 50)
 
+        # ------------------------
         # 训练阶段
+        # ------------------------
         net.train()
-        for img, label in tqdm(trainloader, desc=f'Epoch {epoch:03d} Training', ncols=100):
+        running_loss = 0.0
+        running_correct = 0
+        running_total = 0
+
+        train_bar = tqdm(trainloader, desc=f'Epoch {epoch:03d} Training', ncols=100)
+        for img, label in train_bar:
             img, label = img.to(device), label.to(device)
             batch_size = img.size(0)
 
@@ -112,6 +118,7 @@ def main():
             part_optimizer.zero_grad()
             concat_optimizer.zero_grad()
             partcls_optimizer.zero_grad()
+
             with amp.autocast(device_type='cuda'):
                 raw_logits, concat_logits, part_logits, _, top_n_prob = net(img)
 
@@ -130,21 +137,40 @@ def main():
 
                 total_loss = raw_loss + rank_loss + concat_loss + partcls_loss
 
+            # 反向与优化
             scaler.scale(total_loss).backward()
-
             scaler.step(raw_optimizer)
             scaler.step(part_optimizer)
             scaler.step(concat_optimizer)
             scaler.step(partcls_optimizer)
             scaler.update()
 
+            # 更新统计
+            running_loss += total_loss.item() * batch_size
+            with torch.no_grad():
+                _, preds = concat_logits.max(1)
+                running_correct += preds.eq(label).sum().item()
+            running_total += batch_size
+
+            # 更新 tqdm 后缀
+            avg_loss = running_loss / running_total
+            avg_acc = running_correct / running_total
+            train_bar.set_postfix({
+                'loss': f'{avg_loss:.4f}',
+                'acc': f'{avg_acc:.4f}'
+            })
+
+        _print(f'Epoch {epoch:03d} TRAIN  - loss: {avg_loss:.4f}, acc: {avg_acc:.4f}')
+
+        # ------------------------
         # 验证与保存
+        # ------------------------
         if epoch % SAVE_FREQ == 0 or epoch == 499:
             net.eval()
-
-            # 评估验证集
             val_loss, val_correct, total = 0.0, 0, 0
-            for img, label in tqdm(val_loader, desc=f'Epoch {epoch:03d} Eval Val', ncols=100):
+
+            val_bar = tqdm(val_loader, desc=f'Epoch {epoch:03d} Eval Val', ncols=100)
+            for img, label in val_bar:
                 img, label = img.to(device), label.to(device)
                 with torch.no_grad(), amp.autocast(device_type='cuda'):
                     _, concat_logits, _, _, _ = net(img)
@@ -156,9 +182,14 @@ def main():
                 val_correct += pred.eq(label).sum().item()
                 val_loss += loss.item() * batch_size
 
+                val_bar.set_postfix({
+                    'loss': f'{(val_loss/total):.4f}',
+                    'acc': f'{(val_correct/total):.4f}'
+                })
+
             val_acc = val_correct / total
             val_loss /= total
-            _print(f'epoch:{epoch} - val loss: {val_loss:.3f} acc: {val_acc:.3f}')
+            _print(f'Epoch {epoch:03d} VAL    - loss: {val_loss:.4f}, acc: {val_acc:.4f}')
 
             # 保存最佳模型
             if val_acc > best_val_acc:
@@ -179,7 +210,9 @@ def main():
                     'net_state_dict': net.state_dict()
                 }, os.path.join(save_dir, 'final.ckpt'))
 
-        # 调度学习率
+        # ------------------------
+        # 更新学习率
+        # ------------------------
         for scheduler in schedulers:
             scheduler.step()
 
