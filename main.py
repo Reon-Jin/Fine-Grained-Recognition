@@ -3,7 +3,7 @@ import torch
 from torch.utils.data import DataLoader
 import pandas as pd
 from config import *  # 包含 data_transforms, TestDataset 等
-from model import MultiStreamFeatureExtractor
+from core.model import MultiStreamFeatureExtractor
 
 
 def predict(model, dataloader, device):
