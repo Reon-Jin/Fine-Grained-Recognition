@@ -6,6 +6,7 @@ from datetime import datetime
 from torch.optim.lr_scheduler import MultiStepLR
 from multiprocessing import freeze_support
 from tqdm import tqdm
+from torch.cuda.amp import autocast, GradScaler
 
 # 从 config 中引入超参数和数据接口
 from config import (
@@ -26,6 +27,7 @@ from core.utils import init_log
 def main():
     # 仅使用 GPU 0
     os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+    torch.backends.cudnn.benchmark = True
 
     # 准备保存目录
     start_epoch = 1
@@ -43,6 +45,7 @@ def main():
         batch_size=BATCH_SIZE,
         shuffle=True,
         num_workers=4,
+        pin_memory=True,
         drop_last=False
     )
     valset = get_val_dataset()
@@ -51,6 +54,7 @@ def main():
         batch_size=BATCH_SIZE,
         shuffle=False,
         num_workers=4,
+        pin_memory=True,
         drop_last=False
     )
 
@@ -67,6 +71,7 @@ def main():
 
     # 损失函数
     criterion = torch.nn.CrossEntropyLoss().to(device)
+    scaler = GradScaler()
 
     # 定义各分支优化器
     raw_optimizer = torch.optim.SGD(
@@ -107,29 +112,31 @@ def main():
             part_optimizer.zero_grad()
             concat_optimizer.zero_grad()
             partcls_optimizer.zero_grad()
+            with autocast():
+                raw_logits, concat_logits, part_logits, _, top_n_prob = net(img)
 
-            raw_logits, concat_logits, part_logits, _, top_n_prob = net(img)
+                # 计算各分支损失
+                part_loss = model.list_loss(
+                    part_logits.view(batch_size * PROPOSAL_NUM, -1),
+                    label.unsqueeze(1).repeat(1, PROPOSAL_NUM).view(-1)
+                ).view(batch_size, PROPOSAL_NUM)
+                raw_loss = criterion(raw_logits, label)
+                concat_loss = criterion(concat_logits, label)
+                rank_loss = model.ranking_loss(top_n_prob, part_loss)
+                partcls_loss = criterion(
+                    part_logits.view(batch_size * PROPOSAL_NUM, -1),
+                    label.unsqueeze(1).repeat(1, PROPOSAL_NUM).view(-1)
+                )
 
-            # 计算各分支损失
-            part_loss = model.list_loss(
-                part_logits.view(batch_size * PROPOSAL_NUM, -1),
-                label.unsqueeze(1).repeat(1, PROPOSAL_NUM).view(-1)
-            ).view(batch_size, PROPOSAL_NUM)
-            raw_loss = criterion(raw_logits, label)
-            concat_loss = criterion(concat_logits, label)
-            rank_loss = model.ranking_loss(top_n_prob, part_loss)
-            partcls_loss = criterion(
-                part_logits.view(batch_size * PROPOSAL_NUM, -1),
-                label.unsqueeze(1).repeat(1, PROPOSAL_NUM).view(-1)
-            )
+                total_loss = raw_loss + rank_loss + concat_loss + partcls_loss
 
-            total_loss = raw_loss + rank_loss + concat_loss + partcls_loss
-            total_loss.backward()
+            scaler.scale(total_loss).backward()
 
-            raw_optimizer.step()
-            part_optimizer.step()
-            concat_optimizer.step()
-            partcls_optimizer.step()
+            scaler.step(raw_optimizer)
+            scaler.step(part_optimizer)
+            scaler.step(concat_optimizer)
+            scaler.step(partcls_optimizer)
+            scaler.update()
 
         # 验证与保存
         if epoch % SAVE_FREQ == 0 or epoch == 499:
@@ -139,7 +146,7 @@ def main():
             val_loss, val_correct, total = 0.0, 0, 0
             for img, label in tqdm(val_loader, desc=f'Epoch {epoch:03d} Eval Val', ncols=100):
                 img, label = img.to(device), label.to(device)
-                with torch.no_grad():
+                with torch.no_grad(), autocast():
                     _, concat_logits, _, _, _ = net(img)
                     loss = criterion(concat_logits, label)
                     _, pred = concat_logits.max(1)
