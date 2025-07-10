@@ -6,7 +6,7 @@ from datetime import datetime
 from torch.optim.lr_scheduler import MultiStepLR
 from multiprocessing import freeze_support
 from tqdm import tqdm
-from torch.cuda.amp import autocast, GradScaler
+from torch import amp
 
 # 从 config 中引入超参数和数据接口
 from config import (
@@ -71,7 +71,7 @@ def main():
 
     # 损失函数
     criterion = torch.nn.CrossEntropyLoss().to(device)
-    scaler = GradScaler()
+    scaler = amp.GradScaler()
 
     # 定义各分支优化器
     raw_optimizer = torch.optim.SGD(
@@ -112,7 +112,7 @@ def main():
             part_optimizer.zero_grad()
             concat_optimizer.zero_grad()
             partcls_optimizer.zero_grad()
-            with autocast():
+            with amp.autocast(device_type='cuda'):
                 raw_logits, concat_logits, part_logits, _, top_n_prob = net(img)
 
                 # 计算各分支损失
@@ -146,7 +146,7 @@ def main():
             val_loss, val_correct, total = 0.0, 0, 0
             for img, label in tqdm(val_loader, desc=f'Epoch {epoch:03d} Eval Val', ncols=100):
                 img, label = img.to(device), label.to(device)
-                with torch.no_grad(), autocast():
+                with torch.no_grad(), amp.autocast(device_type='cuda'):
                     _, concat_logits, _, _, _ = net(img)
                     loss = criterion(concat_logits, label)
                     _, pred = concat_logits.max(1)
