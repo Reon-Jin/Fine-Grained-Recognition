@@ -93,14 +93,16 @@ class attention_net(nn.Module):
         top_n_prob = torch.gather(rpn_score, dim=1, index=top_n_idx)     # (B, topN)
 
         # 从 padded 图上裁剪每块 region，resize 到 224×224
+        H_pad = H + pad_side * 2
+        W_pad = W + pad_side * 2
         part_imgs = torch.zeros((batch, self.topN, 3, H, W), device=x.device)
         for i in range(batch):
             for j in range(self.topN):
                 y0, x0, y1, x1 = top_n_cdds[i, j, 1:5].astype(int)
-                if y1 <= y0:
-                    y1 = y0 + 1
-                if x1 <= x0:
-                    x1 = x0 + 1
+                y0 = max(0, min(y0, H_pad - 1))
+                x0 = max(0, min(x0, W_pad - 1))
+                y1 = max(y0 + 1, min(y1, H_pad))
+                x1 = max(x0 + 1, min(x1, W_pad))
                 crop = x_pad[i:i+1, :, y0:y1, x0:x1]
                 part_imgs[i, j] = F.interpolate(
                     crop,
