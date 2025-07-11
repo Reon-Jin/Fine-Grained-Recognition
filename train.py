@@ -82,10 +82,10 @@ if __name__ == "__main__":
     num_classes   = len(train_dataset.classes)
 
     train_loader = DataLoader(
-        train_dataset, batch_size=64, shuffle=True, num_workers=4, pin_memory=True
+        train_dataset, batch_size=128, shuffle=True, num_workers=4, pin_memory=True
     )
     val_loader = DataLoader(
-        val_dataset, batch_size=64, shuffle=False, num_workers=4, pin_memory=True
+        val_dataset, batch_size=128, shuffle=False, num_workers=4, pin_memory=True
     )
     print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
     print(f"Train batches: {len(train_loader)}, Val batches: {len(val_loader)}")
