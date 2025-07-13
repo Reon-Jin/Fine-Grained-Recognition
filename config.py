@@ -1,5 +1,7 @@
 import os
 import json
+import cv2
+import numpy as np
 from torchvision import transforms
 from torch.utils.data import Dataset
 from PIL import Image, ImageFile
@@ -15,9 +17,42 @@ ROOT_DIR = "data/WebFG-400"
 DATA_FOLDER = "train_filter"   # 训练／验证都从这里读类文件夹
 
 # 图像增强与归一化
+# ForegroundExtraction 会在 Resize 后，将背景设为黑
+
+def extract_foreground(image_np):
+    """
+    对输入的 RGB numpy 图像执行 GrabCut 分割,
+    将背景设为黑色, 返回前景提取后的图像
+    """
+    h, w = image_np.shape[:2]
+    mask = np.zeros((h, w), np.uint8)
+    bgdModel = np.zeros((1, 65), np.float64)
+    fgdModel = np.zeros((1, 65), np.float64)
+    # 使用中心大矩形作为前景初始化区域
+    rect = (int(w * 0.1), int(h * 0.1), int(w * 0.8), int(h * 0.8))
+    cv2.grabCut(image_np, mask, rect, bgdModel, fgdModel, 5, cv2.GC_INIT_WITH_RECT)
+    # 将 sure bg / prob bg -> 0, sure fg / prob fg -> 1
+    mask2 = np.where((mask == 2) | (mask == 0), 0, 1).astype('uint8')
+    # 应用掩码
+    foreground = image_np * mask2[:, :, np.newaxis]
+    return foreground
+
+# 定义 transform pipeline
+# 首先 Resize 到 IMG_SIZE, 提取前景, 然后其余变换
+class PreprocessResizeAndSegment:
+    def __call__(self, img: Image.Image) -> Image.Image:
+        # Resize
+        img = img.resize((IMG_SIZE, IMG_SIZE), resample=Image.BICUBIC)
+        # 转为 numpy 并提取前景
+        img_np = np.array(img)
+        fg_np = extract_foreground(img_np)
+        # 转回 PIL
+        return Image.fromarray(fg_np)
+
+# 数据增强与归一化
 data_transforms = {
     "train": transforms.Compose([
-        transforms.RandomResizedCrop(IMG_SIZE, scale=(0.8, 1.0), interpolation=InterpolationMode.BICUBIC),
+        PreprocessResizeAndSegment(),
         transforms.RandomHorizontalFlip(),
         transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
         transforms.RandomRotation(10),
@@ -26,12 +61,12 @@ data_transforms = {
         transforms.RandomErasing(p=0.3, scale=(0.02, 0.15), ratio=(0.3, 3.3), value='random'),
     ]),
     "val": transforms.Compose([
-        transforms.Resize((IMG_SIZE, IMG_SIZE), interpolation=InterpolationMode.BICUBIC),
+        PreprocessResizeAndSegment(),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
     ]),
     "test": transforms.Compose([
-        transforms.Resize((IMG_SIZE, IMG_SIZE), interpolation=InterpolationMode.BICUBIC),
+        PreprocessResizeAndSegment(),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
     ]),
@@ -64,7 +99,6 @@ class MultiClassDataset(Dataset):
             abs_path = os.path.join(base_folder, rel)
             if os.path.isfile(abs_path):
                 valid_paths.append(rel)
-            # else: 可以打印或记录 skipped items
 
         # 构建绝对路径和标签列表
         self.image_paths = [
@@ -107,6 +141,7 @@ class TestDataset(Dataset):
 
 
 # 构建 train/val dataset
+
 def get_train_dataset():
     return MultiClassDataset(
         root_dir=ROOT_DIR,
