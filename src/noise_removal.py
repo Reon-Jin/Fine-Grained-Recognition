@@ -5,96 +5,57 @@ import os
 import argparse
 import random
 import cv2
-from tqdm import tqdm
 from ultralytics import YOLO
+from collections import Counter
 
-def detect_folder(
-    img_paths, model, conf_thres, keep_ratio, min_ratio, rerun=True
-):
+
+def detect_main_class(model, img_paths, conf_thres):
     """
-    对单个文件夹的图片列表运行检测，返回要保留的索引列表。
-    如果第一次保留比例 < keep_ratio 并且 rerun=True，会用 conf_thres/2 重跑一次；
-    如果二次保留比例 < min_ratio，则返回 None（保留全部）。
+    对单个文件夹的图片列表运行检测，统计出现频次最多的类别ID作为主类别。
+    返回主类别ID及每张图片的检测结果（列表 of sets）。
     """
-    preds = []
-    # 设置置信度
     model.conf = conf_thres
+    preds = []  # 每张图片预测出的类别集合
     for p in img_paths:
-        # 先用 OpenCV 尝试读取，若失败当作无检测
         im = cv2.imread(p)
         if im is None:
-            preds.append(None)
+            preds.append(set())
             continue
         try:
-            results = model(p)       # 调用 ultralytics YOLO
-            r = results[0]
-            # r.boxes.conf, r.boxes.cls
-            if r.boxes.shape[0] == 0:
-                preds.append(None)
-            else:
-                confs = r.boxes.conf.cpu().numpy()
-                clsids = r.boxes.cls.cpu().numpy().astype(int)
-                idx = confs.argmax()
-                preds.append(int(clsids[idx]))
+            results = model(p)[0]
+            clsids = results.boxes.cls.cpu().numpy().astype(int)
+            preds.append(set(clsids.tolist()))
         except Exception:
-            # 任意异常都当作无检测
-            preds.append(None)
+            preds.append(set())
 
-    # 统计主标签
-    freq = {}
-    for c in preds:
-        if c is not None:
-            freq[c] = freq.get(c, 0) + 1
-    if not freq:
-        return None
+    # 统计所有出现的类别
+    all_classes = []
+    for s in preds:
+        all_classes.extend(s)
+    if not all_classes:
+        return None, preds
+    main_cls = Counter(all_classes).most_common(1)[0][0]
+    return main_cls, preds
 
-    main_cls, _ = max(freq.items(), key=lambda x: x[1])
-    N = len(img_paths)
-    keep_idxs = [i for i,c in enumerate(preds) if c == main_cls]
-    ratio = len(keep_idxs) / N
-
-    # 如果保留比例足够
-    if ratio >= keep_ratio:
-        return keep_idxs
-
-    # 否则重跑一次（置信度减半）
-    if rerun:
-        return detect_folder(
-            img_paths, model,
-            conf_thres = max(0.01, conf_thres * 0.5),
-            keep_ratio=keep_ratio,
-            min_ratio=min_ratio,
-            rerun=False
-        )
-
-    # 重跑后仍不足，则保留全部
-    if ratio < min_ratio:
-        return None
-
-    return keep_idxs
 
 def main():
     parser = argparse.ArgumentParser(
-        description="YOLOv5 主标签过滤 & 8:2 划分 clean_train/clean_val"
+        description="YOLOv5 主标签过滤 & 全局 8:2 划分 clean_train/clean_val"
     )
     parser.add_argument("--train_dir",
                         default="../data/WebFG-400/train",
                         help="原始训练集根目录，每个子文件夹一个类别")
     parser.add_argument("--out_train",
                         default="../data/WebFG-400/clean_train.txt",
-                        help="输出 clean_train.txt")
+                        help="输出 clean_train.txt 列表，每行: <path> <cls_idx>")
     parser.add_argument("--out_val",
                         default="../data/WebFG-400/clean_val.txt",
-                        help="输出 clean_val.txt")
+                        help="输出 clean_val.txt 列表，每行: <path> <cls_idx>")
     parser.add_argument("--model",
                         default="../yolov5su.pt",
                         help="本地 YOLOv5 权重文件")
-    parser.add_argument("--conf_thres", type=float, default=0.25,
+    parser.add_argument("--conf_thres", type=float, default=0.3,
                         help="检测置信度阈值")
-    parser.add_argument("--keep_ratio", type=float, default=0.7,
-                        help="首次过滤后，保留比例 ≥ keep_ratio 则采用结果")
-    parser.add_argument("--min_ratio", type=float, default=0.5,
-                        help="二次过滤后，保留比例 < min_ratio 则保留全部")
     parser.add_argument("--split_ratio", type=float, default=0.8,
                         help="训练/验证划分比例，默认 0.8")
     parser.add_argument("--seed", type=int, default=42,
@@ -103,60 +64,54 @@ def main():
 
     random.seed(args.seed)
 
-    # 1. 加载本地 YOLOv5 模型
+    # 加载模型
     model = YOLO(args.model)
+    kept = []  # 全局保留列表
 
-    per_class = {}
-    # 2. 对每个子文件夹做检测过滤
+    # 遍历每个子文件夹
     for cls_idx, cls_name in enumerate(sorted(os.listdir(args.train_dir))):
         cls_dir = os.path.join(args.train_dir, cls_name)
         if not os.path.isdir(cls_dir):
             continue
 
-        imgs = sorted([
-            f for f in os.listdir(cls_dir)
-            if f.lower().endswith(('.jpg','.jpeg','.png'))
-        ])
+        imgs = sorted([f for f in os.listdir(cls_dir)
+                       if f.lower().endswith(('.jpg', '.jpeg', '.png'))])
         paths = [os.path.join(cls_dir, f) for f in imgs]
 
-        keep = detect_folder(
-            paths, model,
-            conf_thres=args.conf_thres,
-            keep_ratio=args.keep_ratio,
-            min_ratio=args.min_ratio
-        )
-
-        lines = []
-        if keep is None:
-            # 保留全部
-            for p in paths:
-                lines.append(f"{p} {cls_idx}\n")
+        main_cls, preds = detect_main_class(model, paths, args.conf_thres)
+        if main_cls is None:
+            # 未检测到任何目标，保留全部图片
+            kept.extend([(p, cls_idx) for p in paths])
         else:
-            for i in keep:
-                lines.append(f"{paths[i]} {cls_idx}\n")
+            for p, dets in zip(paths, preds):
+                if main_cls in dets:
+                    kept.append((p, cls_idx))
+                else:
+                    # 删除未检测到主类别的图片
+                    try:
+                        os.remove(p)
+                    except Exception:
+                        pass
 
-        per_class[cls_idx] = lines
+    # 全局打乱并按比例分割
+    random.shuffle(kept)
+    cut = int(len(kept) * args.split_ratio)
+    train_list = kept[:cut]
+    val_list = kept[cut:]
 
-    # 3. 按类汇总后打乱并 8:2 划分
-    train_lines, val_lines = [], []
-    for cls_idx, lines in per_class.items():
-        random.shuffle(lines)
-        cut = int(len(lines) * args.split_ratio)
-        train_lines.extend(lines[:cut])
-        val_lines.extend(lines[cut:])
-
-    # 4. 写入 clean_train.txt & clean_val.txt
+    # 写入文件
     os.makedirs(os.path.dirname(args.out_train), exist_ok=True)
-    with open(args.out_train, 'w') as f:
-        f.writelines(train_lines)
-    with open(args.out_val, 'w') as f:
-        f.writelines(val_lines)
+    with open(args.out_train, 'w') as f_train:
+        for p, idx in train_list:
+            f_train.write(f"{p} {idx}\n")
 
-    total = sum(len(v) for v in per_class.values())
-    kept = len(train_lines) + len(val_lines)
-    print(f"✅ 完成：原始 {total} 张 → 保留 {kept} 张")
-    print(f"   train: {len(train_lines)} → {args.out_train}")
-    print(f"    val : {len(val_lines)} → {args.out_val}")
+    os.makedirs(os.path.dirname(args.out_val), exist_ok=True)
+    with open(args.out_val, 'w') as f_val:
+        for p, idx in val_list:
+            f_val.write(f"{p} {idx}\n")
+
+    total = sum(len(files) for _, _, files in os.walk(args.train_dir) if False)  # placeholder
+    print(f"✅ 完成：保留 {len(kept)} 张 → train: {len(train_list)}, val: {len(val_list)}")
 
 if __name__ == "__main__":
     main()
