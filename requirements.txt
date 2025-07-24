@@ -1,5 +1,6 @@
+torch
+torchvision
+timm
 opencv-python==4.6.0.66
-tensorflow==2.13.0
-spektral==1.2.0
-keras-self-attention==0.51.0
 pandas==1.5.3
+

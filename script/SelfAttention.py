@@ -1,49 +1,30 @@
-from tensorflow.keras.layers import Layer
-from tensorflow.keras import layers
-from tensorflow.keras import backend as K
+import torch
+from torch import nn
+import torch.nn.functional as F
 
-import tensorflow as tf
-# from SpectralNormalizationKeras import ConvSN2D
+def hw_flatten(x):
+    # x: [B, C, H, W] → [B, H*W, C]
+    return x.view(x.size(0), x.size(1), -1).permute(0, 2, 1)
 
-def hw_flatten(x) :
-        x_shape = K.shape(x)
-        return K.reshape(x, [x_shape[0], -1, x_shape[-1]]) # return [BATCH, W*H, CHANNELS]
-    
-class SelfAttention(Layer):
-    def __init__(self, filters, **kwargs):
-        self.dim_ordering = K.image_data_format()
+class SelfAttention(nn.Module):
+    """Self-attention layer compatible with PyTorch."""
+
+    def __init__(self, filters):
+        super().__init__()
         self.filters = filters
-        
-        super(SelfAttention, self).__init__(**kwargs)
-        
-    def build(self, input_shape):
-        self.gamma = self.add_weight(shape=(1,),
-                                     name='{}_b'.format(self.name),
-                                     initializer='zeros', trainable=True)
-        
-        super(SelfAttention, self).build(input_shape)  # Be sure to call this at the end
-        
-    def call(self,x):
-        
-        assert(len(x) == 4)
-        img = x[0]
-        f = x[1]
-        g = x[2]
-        h = x[3]
-        # N = h * w
-        s = tf.matmul(hw_flatten(g), hw_flatten(f), transpose_b=True) # # [bs, N, N]
-        
-        beta = K.softmax(s)  # attention map
-        
-        o = tf.matmul(beta, hw_flatten(h)) # [bs, N, C]        
-        o = K.reshape(o, shape=[K.shape(img)[0], K.shape(img)[1], K.shape(img)[2], self.filters])  # [bs, h, w, C]
-        img = self.gamma * o + img
-        
-        return img
-    def compute_output_shape(self, input_shape):
-        return input_shape[0]
-    
-    def get_config(self):
-        config = {'filters': self.filters}
-        base_config = super(SelfAttention, self).get_config()
-        return dict(list(base_config.items()) + list(config.items()))
+        self.gamma = nn.Parameter(torch.zeros(1))
+
+    def forward(self, img):
+        # img: [B, C, H, W]
+        B, C, H, W = img.shape
+        f_flat = hw_flatten(img)
+        g_flat = hw_flatten(img)
+        h_flat = hw_flatten(img)
+
+        s = torch.matmul(g_flat, f_flat.transpose(1, 2))  # [B, N, N]
+        beta = F.softmax(s, dim=-1)
+        o = torch.matmul(beta, h_flat)  # [B, N, C]
+        o = o.permute(0, 2, 1).contiguous().view(B, C, H, W)
+        return self.gamma * o + img
+
+
