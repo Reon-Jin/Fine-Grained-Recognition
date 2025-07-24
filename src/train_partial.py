@@ -214,11 +214,11 @@ if __name__ == "__main__":
                         help='特征维度')
     parser.add_argument('--epochs',
                         type=int,
-                        default=50,
+                        default=110,
                         help='总训练 epoch 数 (论文中 110)')  # :contentReference[oaicite:4]{index=4}
     parser.add_argument('--warmup',
                         type=int,
-                        default=5,
+                        default=10,
                         help='warm-up epoch 数 (论文中 10)')  # :contentReference[oaicite:5]{index=5}
     parser.add_argument('--lr',
                         type=float,
