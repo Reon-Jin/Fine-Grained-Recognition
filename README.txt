@@ -1,4 +1,6 @@
-# Instruction with installation and envirnment setup.
+
+####################### Instruction with installation and envirnment setup ######################
+
 ---> To create a conda environment with basic package use the following command:
 
 conda create -n <<environment_name>> anaconda python=<<python_version>>
@@ -15,40 +17,41 @@ If you want to use gpu for training first check your driver version using comman
 -->  Linux cuda compatibility : https://www.tensorflow.org/install/source#tested_build_configurations
 -->  Windows cuda compatibility : https://www.tensorflow.org/install/source_windows#tested_build_configurations
 
-# Instruction with dataset organization 
+
+########################## Instruction with dataset organization #################################
 
 The dataset directory structure (inside the datasets folder) should be like the below tree structure where each folder xx inside train and test should contain fine grained images
 
-datasets <br>
-├── dataset_1 <br>
-│   ├── train <br>
-│   │    ├── folder 01 <br>
-│   │    ├── folder 02 <br>
-│   │    └── ...  <br>
-│   └── test <br>
-│        ├── folder 01 <br>
-│        ├── folder 02 <br>
-│        └── ... <br>
-│ <br>
-│  ... <br>
-│ <br>
-└── dataset_2 <br>
-    ├── train <br>
-    │    ├── folder 01 <br>
-    │    ├── folder 02 <br>
-    │    └── ... <br>
-    └── test <br>
-        ├── folder 01 <br>
-        ├── folder 02 <br>
-        └── ... <br>
- <br>
+datasets
+├── dataset_1
+│   ├── train
+│   │    ├── folder 01
+│   │    ├── folder 02
+│   │    └── ...
+│   └── test
+│        ├── folder 01
+│        ├── folder 02
+│        └── ...
+│
+│  ...
+│
+└── dataset_2
+    ├── train
+    │    ├── folder 01
+    │    ├── folder 02
+    │    └── ...
+    └── test
+        ├── folder 01
+        ├── folder 02
+        └── ...
 
-# Model hyperparameters and other configuration setting 
+
+############### Model hyperparameters and other configuration setting ####################
 
 Find some of the default parameter configuration in "config.yaml" file. You can directly change in this config file or pass as an argument in console
 
 
-# From python console 
+############################### From python console ##############################
 
 --> To train from a particular checkpoint from a particular epoch (say 50) use command:
 
