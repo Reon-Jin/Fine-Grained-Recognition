@@ -1,7 +1,7 @@
 DATA:
   nb_classes: 400
   image_size: [224, 224]
-  dataset_dir: 'data/WebFG-400'
+  dataset_dir: '../data/WebFG-400'
 HARDWARE:
   multi_gpu: False
   gpu_id: 0        # CPU : -1 and GPU: 0/1

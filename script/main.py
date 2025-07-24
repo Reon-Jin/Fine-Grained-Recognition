@@ -31,7 +31,7 @@ from models import construct_model
 tf.compat.v1.experimental.output_all_intermediates(True)
 
 # ---------------- Load configuration ----------------
-param_dir = "config.yaml"
+param_dir = "../config.yaml"
 with open(param_dir, 'r') as file:
     param = yaml.load(file, Loader=yaml.FullLoader)
 print('Loading Default parameter configuration:\n', json.dumps(param, sort_keys=True, indent=3))
