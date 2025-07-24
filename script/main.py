@@ -7,7 +7,7 @@ from torch import nn
 from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
 from torch.optim import SGD
-
+from tqdm import tqdm
 from opt_dg_tf2_new import DirectoryDataset
 from models import construct_model
 
@@ -76,25 +76,61 @@ optimizer = SGD(model.parameters(), lr=lr)
 # Training loop
 for epoch in range(epochs):
     model.train()
-    for imgs, labels in train_loader:
+    epoch_loss = 0.0
+    correct = 0
+    total = 0
+
+    train_bar = tqdm(train_loader, desc=f"[Train] Epoch {epoch+1}/{epochs}")
+    for imgs, labels in train_bar:
         imgs, labels = imgs.to(device), labels.to(device)
+
         optimizer.zero_grad()
         outputs = model(imgs)
         loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
 
+        # 更新统计量
+        epoch_loss += loss.item() * imgs.size(0)
+        preds = outputs.argmax(dim=1)
+        batch_correct = (preds == labels).sum().item()
+        correct += batch_correct
+        total += labels.size(0)
+
+        # 实时更新进度条信息
+        batch_acc = batch_correct / labels.size(0)
+        epoch_acc = correct / total if total > 0 else 0.0
+        train_bar.set_postfix({
+            "Loss": f"{loss.item():.4f}",
+            "Batch Acc": f"{batch_acc:.4f}",
+            "Epoch Acc": f"{epoch_acc:.4f}"
+        })
+
+    avg_loss = epoch_loss / total
+    train_acc = correct / total if total > 0 else 0
+
     # Validation
     model.eval()
-    total = 0
-    correct = 0
+    val_correct = 0
+    val_total = 0
+
+    val_bar = tqdm(val_loader, desc=f"[Val  ] Epoch {epoch+1}/{epochs}")
     with torch.no_grad():
-        for imgs, labels in val_loader:
+        for imgs, labels in val_bar:
             imgs, labels = imgs.to(device), labels.to(device)
             outputs = model(imgs)
             preds = outputs.argmax(dim=1)
-            total += labels.size(0)
-            correct += (preds == labels).sum().item()
-    acc = correct / total if total > 0 else 0
-    print(f"Epoch {epoch+1}/{epochs} - Val Acc: {acc:.4f}")
+            batch_correct = (preds == labels).sum().item()
+            val_correct += batch_correct
+            val_total += labels.size(0)
+
+            val_bar.set_postfix({
+                "Batch Acc": f"{batch_correct / labels.size(0):.4f}",
+                "Epoch Acc": f"{val_correct / val_total:.4f}"
+            })
+
+    val_acc = val_correct / val_total if val_total > 0 else 0
+    print(f"\n✅ Epoch {epoch+1}/{epochs} | Train Acc: {train_acc:.4f} | Val Acc: {val_acc:.4f} | Train Loss: {avg_loss:.4f}\n")
+
+
 

@@ -18,19 +18,28 @@ class SR_GNN(nn.Module):
         self.base_channels = self.base.feature_info[-1]['num_chs']
         self.rois = getROIS(resolution=ROIS_resolution, gridSize=ROIS_grid_size, minSize=minSize)
         self.roi_pool = RoiPooling(pool_size, self.rois)
-        feat_dim = self.base_channels * pool_size * pool_size
+        feat_dim = self.base_channels  # ⚠️ 修复点：最终特征维度为 C 而不是 C*H*W
         self.attention = SelfAttention(self.base_channels)
         self.fc = nn.Linear(feat_dim, nb_classes)
 
     def forward(self, x):
-        features = self.base(x)[-1]
-        resized = F.interpolate(features, size=(self.roi_pool.pool_size * 2, self.roi_pool.pool_size * 2), mode='bilinear', align_corners=False)
-        rois = self.roi_pool(resized)
-        b, r, c, h, w = rois.shape
-        rois = rois.view(b, r, -1)
-        attn = self.attention(rois, rois, rois, rois)
-        attn = attn.view(b, r, -1).mean(dim=1)
-        out = self.fc(attn)
+        features = self.base(x)[-1]  # [B, C, H, W]
+        resized = F.interpolate(
+            features,
+            size=(self.roi_pool.pool_size * 2, self.roi_pool.pool_size * 2),
+            mode='bilinear', align_corners=False
+        )
+        rois = self.roi_pool(resized)  # [B, N_rois, C, H, W]
+
+        attn_outputs = []
+        for i in range(rois.size(1)):
+            roi = rois[:, i, :, :, :]  # [B, C, H, W]
+            attn_roi = self.attention(roi)  # [B, C, H, W]
+            pooled = F.adaptive_avg_pool2d(attn_roi, 1).squeeze(-1).squeeze(-1)  # [B, C]
+            attn_outputs.append(pooled)
+
+        attn = torch.stack(attn_outputs, dim=1).mean(dim=1)  # [B, C]
+        out = self.fc(attn)  # [B, nb_classes]
         return out
 
 
@@ -38,4 +47,3 @@ def construct_model(name, **kwargs):
     if name == 'srgnn':
         return SR_GNN(**kwargs)
     raise ValueError('Model %s not found' % name)
-
