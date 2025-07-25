@@ -9,3 +9,5 @@ visualize_cam.py
 yolov5su.pt
 parts/
 submission/
+/script/best_checkpoints
+/script/roi_vis
