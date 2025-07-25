@@ -10,11 +10,13 @@ from torch.utils.data import Dataset
 
 
 class DirectoryDataset(Dataset):
-    def __init__(self, base_directories, augment=False, preprocess=None, target_size=(224, 224)):
+    def __init__(self, base_directories, augment=False, preprocess=None, target_size=(224, 224), aug_config=None):
         self.base_directories = base_directories
         self.augment = augment
         self.preprocess = preprocess
         self.target_size = target_size
+        # Store augmentation parameters from config
+        self.aug_config = aug_config or {}
 
         self.class_names = []
         self.files = []
@@ -46,28 +48,59 @@ class DirectoryDataset(Dataset):
         img = img.astype(np.float32)
 
         if self.augment:
-            img = self.cv2_image_augmentation(img)
+            # Get augmentation params from config, with defaults
+            theta = self.aug_config.get('aug_rotation', 20)
+            tx    = self.aug_config.get('aug_tx',       10)
+            ty    = self.aug_config.get('aug_ty',       10)
+            scale = self.aug_config.get('aug_zoom',      1.0)
+            flip  = self.aug_config.get('aug_flip',    False)
+            img = self.cv2_image_augmentation(
+                img,
+                theta=theta,
+                tx=tx,
+                ty=ty,
+                scale=scale,
+                flip=flip
+            )
+
         if self.preprocess:
             img = self.preprocess(img)
 
-        img = torch.from_numpy(img.transpose(2, 0, 1))
+        # If preprocess didn't convert to tensor, convert now
+        if isinstance(img, np.ndarray):
+            img = torch.from_numpy(img.transpose(2, 0, 1))
+
         label = torch.tensor(self.labels[index], dtype=torch.long)
         return img, label
 
     @staticmethod
     def cv2_image_augmentation(img, theta=20, tx=10, ty=10, scale=1.0, flip=False):
+        # Random scale
         if scale != 1.0:
             scale = np.random.uniform(1 - scale, 1 + scale)
+        # Random rotation
         if theta != 0:
             theta = np.random.uniform(-theta, theta)
-        m_inv = cv2.getRotationMatrix2D((img.shape[1] // 2, img.shape[0] // 2), theta, scale)
+        # Compute affine matrix
+        m_inv = cv2.getRotationMatrix2D(
+            (img.shape[1] // 2, img.shape[0] // 2),
+            theta,
+            scale
+        )
+        # Random translation
         if tx != 0 or ty != 0:
-            tx = np.random.uniform(-tx, tx)
-            ty = np.random.uniform(-ty, ty)
-            m_inv[0, 2] += tx
-            m_inv[1, 2] += ty
-        image = cv2.warpAffine(img, m_inv, (img.shape[1], img.shape[0]), borderMode=1)
-        if flip and round(random.random()):
+            tx_val = np.random.uniform(-tx, tx)
+            ty_val = np.random.uniform(-ty, ty)
+            m_inv[0, 2] += tx_val
+            m_inv[1, 2] += ty_val
+        # Warp image
+        image = cv2.warpAffine(
+            img,
+            m_inv,
+            (img.shape[1], img.shape[0]),
+            borderMode=1
+        )
+        # Random horizontal flip
+        if flip and random.random() > 0.5:
             image = np.fliplr(image)
         return image
-
