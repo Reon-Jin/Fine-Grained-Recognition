@@ -3,5 +3,5 @@ torchvision
 timm
 opencv-python==4.6.0.66
 pandas==1.5.3
-tensorboard
+matplotlib
 

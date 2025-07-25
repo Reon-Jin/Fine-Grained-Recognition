@@ -11,8 +11,7 @@ from torchvision import transforms
 from torch.optim import SGD
 from tqdm import tqdm
 from torch.cuda.amp import autocast, GradScaler
-from torch.utils.tensorboard import SummaryWriter
-from torchvision.utils import make_grid
+import matplotlib.pyplot as plt
 from opt_dg_tf2_new import DirectoryDataset
 from models import construct_model
 
@@ -49,7 +48,12 @@ def main():
     train_data_dir = os.path.join(dataset_dir, "train")
     ckpt_dir       = "./best_checkpoints"
     os.makedirs(ckpt_dir, exist_ok=True)
-    writer = SummaryWriter(log_dir="./runs")
+
+    # ---------------- Visualisation setup ----------------
+    plt.ion()
+    fig, (ax_loss, ax_acc) = plt.subplots(1, 2, figsize=(10, 4))
+    loss_history, train_history, val_history = [], [], []
+    attn_fig, attn_ax = None, None
 
     # ---------------- Transforms ----------------
     transform = transforms.Compose([
@@ -175,23 +179,52 @@ def main():
                 })
 
         val_acc = val_correct / val_total if val_total else 0.0
-        # -------- TensorBoard logging --------
-        writer.add_scalar('Loss/train', avg_loss, epoch)
-        writer.add_scalar('Acc/train', train_acc, epoch)
-        writer.add_scalar('Acc/val', val_acc, epoch)
 
-        # log attention map for first validation batch
+        # -------- Update visualisation --------
+        loss_history.append(avg_loss)
+        train_history.append(train_acc)
+        val_history.append(val_acc)
+
+        ax_loss.clear()
+        ax_loss.plot(loss_history, label='Loss')
+        ax_loss.set_title('Training Loss')
+        ax_loss.legend()
+
+        ax_acc.clear()
+        ax_acc.plot(train_history, label='Train Acc')
+        ax_acc.plot(val_history, label='Val Acc')
+        ax_acc.set_title('Accuracy')
+        ax_acc.legend()
+        fig.canvas.draw()
+        fig.canvas.flush_events()
+
+        # log attention map
         if hasattr(model, 'cbam') and hasattr(model.cbam, 'sa_weight'):
             attn = model.cbam.sa_weight
             if attn is not None:
-                grid = make_grid(attn, normalize=True, scale_each=True)
-                writer.add_image('Attention/CBAM', grid, epoch)
+                heat = attn.mean(dim=1, keepdim=True)[0, 0].detach().cpu().numpy()
+                if attn_fig is None:
+                    attn_fig, attn_ax = plt.subplots()
+                else:
+                    attn_ax = attn_fig.axes[0]
+                attn_ax.clear()
+                attn_ax.imshow(heat, cmap='viridis')
+                attn_ax.set_title('CBAM Attention')
+                attn_fig.canvas.draw()
+                attn_fig.canvas.flush_events()
         elif hasattr(model, 'attention') and hasattr(model.attention, 'attention'):
             attn = model.attention.attention
             if attn is not None:
-                attn_img = attn[0].unsqueeze(0).unsqueeze(0)
-                grid = make_grid(attn_img, normalize=True, scale_each=True)
-                writer.add_image('Attention/Self', grid, epoch)
+                heat = attn[0].detach().cpu().numpy()
+                if attn_fig is None:
+                    attn_fig, attn_ax = plt.subplots()
+                else:
+                    attn_ax = attn_fig.axes[0]
+                attn_ax.clear()
+                attn_ax.imshow(heat, cmap='viridis')
+                attn_ax.set_title('Self Attention')
+                attn_fig.canvas.draw()
+                attn_fig.canvas.flush_events()
         print(f"\n✅ Epoch {epoch}/{epochs} | Train Loss: {avg_loss:.4f} "
               f"| Train Acc: {train_acc:.4f} | Val Acc: {val_acc:.4f}\n")
 
@@ -202,7 +235,8 @@ def main():
             torch.save(model.state_dict(), ckpt_path)
             print(f"→ New best model saved to {ckpt_path}")
 
-    writer.close()
+    plt.ioff()
+    plt.show()
 
 if __name__ == "__main__":
     freeze_support()
