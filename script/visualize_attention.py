@@ -28,6 +28,14 @@ def visualize(model_path, image_folder, backbone='resnet50', nb_classes=1000):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = CBAMResNet(backbone=backbone, nb_classes=nb_classes)
     state_dict = torch.load(model_path, map_location=device)
+
+    # Ensure checkpoint was trained with CBAM or attention maps will be random
+    if not any(k.startswith("cbam") for k in state_dict.keys()):
+        raise ValueError(
+            f"Checkpoint '{model_path}' does not contain CBAM weights. "
+            "Load a model trained with CBAM to visualize attention correctly."
+        )
+
     model.load_state_dict(state_dict, strict=False)
     model.to(device)
     model.eval()
