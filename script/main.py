@@ -31,7 +31,6 @@ def main():
     dataset_dir  = param['DATA']['dataset_dir']
     batch_size   = param['MODEL']['batch_size']
     lr           = param['MODEL']['learning_rate']
-    model_name   = param['MODEL']['model_name']
     epochs       = param['TRAIN']['epochs']
 
     # Override from command line
@@ -99,22 +98,12 @@ def main():
     )
 
     # ---------------- Model setup ----------------
-    if model_name == 'cbam_resnet':
-        backbone = param['MODEL'].get('backbone', 'resnet50')
-        model = construct_model(
-            name=model_name,
-            backbone=backbone,
-            nb_classes=nb_classes
-        )
-    else:
-        model = construct_model(
-            name=model_name,
-            pool_size=7,
-            ROIS_resolution=42,
-            ROIS_grid_size=3,
-            minSize=2,
-            nb_classes=nb_classes,
-        )
+    backbone = param['MODEL'].get('backbone', 'resnet50')
+    model = construct_model(
+        name='cbam_resnet',
+        backbone=backbone,
+        nb_classes=nb_classes
+    )
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model.to(device)
 
