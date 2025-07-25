@@ -6,6 +6,7 @@ import timm
 
 from RoiPoolingConvTF2 import RoiPooling
 from SelfAttention import SelfAttention
+from cbam import CBAM
 from utils import getROIS, crop, squeezefunc, stackfunc
 
 
@@ -18,7 +19,7 @@ class SR_GNN(nn.Module):
         self.base_channels = self.base.feature_info[-1]['num_chs']
         self.rois = getROIS(resolution=ROIS_resolution, gridSize=ROIS_grid_size, minSize=minSize)
         self.roi_pool = RoiPooling(pool_size, self.rois)
-        feat_dim = self.base_channels  # ⚠️ 修复点：最终特征维度为 C 而不是 C*H*W
+        feat_dim = self.base_channels
         self.attention = SelfAttention(self.base_channels)
         self.fc = nn.Linear(feat_dim, nb_classes)
 
@@ -43,7 +44,28 @@ class SR_GNN(nn.Module):
         return out
 
 
+class CBAMResNet(nn.Module):
+    """ResNet backbone with CBAM attention."""
+
+    def __init__(self, backbone='resnet50', nb_classes=1000):
+        super().__init__()
+        self.base = timm.create_model(backbone, pretrained=True, features_only=True)
+        self.in_ch = self.base.feature_info[-1]['num_chs']
+        self.cbam = CBAM(self.in_ch)
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Linear(self.in_ch, nb_classes)
+
+    def forward(self, x):
+        feat = self.base(x)[-1]  # [B, C, H, W]
+        feat = self.cbam(feat)
+        pooled = self.pool(feat).view(x.size(0), -1)
+        return self.fc(pooled)
+
+
 def construct_model(name, **kwargs):
     if name == 'srgnn':
         return SR_GNN(**kwargs)
+    if name == 'cbam_resnet':
+        backbone = kwargs.pop('backbone', 'resnet50')
+        return CBAMResNet(backbone=backbone, **kwargs)
     raise ValueError('Model %s not found' % name)

@@ -1,6 +1,6 @@
 # Fine Grained Recognition (PyTorch)
 
-This project contains a simple implementation of SR-GNN using PyTorch. The original TensorFlow code was replaced with PyTorch modules.
+This project contains a PyTorch implementation for fine grained recognition. Besides the previous SR-GNN baseline, it now provides a ResNet50 based model enhanced with a CBAM attention module. During training, a live Matplotlib window displays losses, accuracies and attention maps.
 
 ## Setup
 Create an environment and install the dependencies:
@@ -27,7 +27,9 @@ datasets/
 ## Training
 Run training from the project root:
 ```bash
-python ./script/main.py dataset_dir ./datasets/Cars nb_classes 196 epochs 150 model_name srgnn
+python ./script/main.py dataset_dir ./datasets/Cars nb_classes 196 epochs 150 model_name cbam_resnet
 ```
-Configuration parameters can be changed in `config.yaml` or passed via command line.
+Running the command will open a Matplotlib window that updates after each epoch with the latest loss curves, accuracies and attention maps.
+```
+All configuration parameters can be changed in `config.yaml` or overridden via the command line.
 

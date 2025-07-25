@@ -14,8 +14,9 @@ AUGMENTATION:
 MODEL:
   batch_size: 32
   learning_rate: 0.01
-  model_name: 'srgnn' 
-  checkpoint: './TrainedModels/' 
+  model_name: 'cbam_resnet'
+  backbone: 'resnet50'
+  checkpoint: './TrainedModels/'
 TRAIN:
   validation_freq: 5
   checkpoint_freq: 5
@@ -25,3 +26,4 @@ TRAIN:
   learning_rate: 0.01
 WANDB:
   run_name : 'None'
+

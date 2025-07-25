@@ -11,6 +11,7 @@ from torchvision import transforms
 from torch.optim import SGD
 from tqdm import tqdm
 from torch.cuda.amp import autocast, GradScaler
+import matplotlib.pyplot as plt
 from opt_dg_tf2_new import DirectoryDataset
 from models import construct_model
 
@@ -47,6 +48,12 @@ def main():
     train_data_dir = os.path.join(dataset_dir, "train")
     ckpt_dir       = "./best_checkpoints"
     os.makedirs(ckpt_dir, exist_ok=True)
+
+    # ---------------- Visualisation setup ----------------
+    plt.ion()
+    fig, (ax_loss, ax_acc) = plt.subplots(1, 2, figsize=(10, 4))
+    loss_history, train_history, val_history = [], [], []
+    attn_fig, attn_ax = None, None
 
     # ---------------- Transforms ----------------
     transform = transforms.Compose([
@@ -92,14 +99,22 @@ def main():
     )
 
     # ---------------- Model setup ----------------
-    model = construct_model(
-        name=model_name,
-        pool_size=7,
-        ROIS_resolution=42,
-        ROIS_grid_size=3,
-        minSize=2,
-        nb_classes=nb_classes,
-    )
+    if model_name == 'cbam_resnet':
+        backbone = param['MODEL'].get('backbone', 'resnet50')
+        model = construct_model(
+            name=model_name,
+            backbone=backbone,
+            nb_classes=nb_classes
+        )
+    else:
+        model = construct_model(
+            name=model_name,
+            pool_size=7,
+            ROIS_resolution=42,
+            ROIS_grid_size=3,
+            minSize=2,
+            nb_classes=nb_classes,
+        )
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model.to(device)
 
@@ -164,6 +179,52 @@ def main():
                 })
 
         val_acc = val_correct / val_total if val_total else 0.0
+
+        # -------- Update visualisation --------
+        loss_history.append(avg_loss)
+        train_history.append(train_acc)
+        val_history.append(val_acc)
+
+        ax_loss.clear()
+        ax_loss.plot(loss_history, label='Loss')
+        ax_loss.set_title('Training Loss')
+        ax_loss.legend()
+
+        ax_acc.clear()
+        ax_acc.plot(train_history, label='Train Acc')
+        ax_acc.plot(val_history, label='Val Acc')
+        ax_acc.set_title('Accuracy')
+        ax_acc.legend()
+        fig.canvas.draw()
+        fig.canvas.flush_events()
+
+        # log attention map
+        if hasattr(model, 'cbam') and hasattr(model.cbam, 'sa_weight'):
+            attn = model.cbam.sa_weight
+            if attn is not None:
+                heat = attn.mean(dim=1, keepdim=True)[0, 0].detach().cpu().numpy()
+                if attn_fig is None:
+                    attn_fig, attn_ax = plt.subplots()
+                else:
+                    attn_ax = attn_fig.axes[0]
+                attn_ax.clear()
+                attn_ax.imshow(heat, cmap='viridis')
+                attn_ax.set_title('CBAM Attention')
+                attn_fig.canvas.draw()
+                attn_fig.canvas.flush_events()
+        elif hasattr(model, 'attention') and hasattr(model.attention, 'attention'):
+            attn = model.attention.attention
+            if attn is not None:
+                heat = attn[0].detach().cpu().numpy()
+                if attn_fig is None:
+                    attn_fig, attn_ax = plt.subplots()
+                else:
+                    attn_ax = attn_fig.axes[0]
+                attn_ax.clear()
+                attn_ax.imshow(heat, cmap='viridis')
+                attn_ax.set_title('Self Attention')
+                attn_fig.canvas.draw()
+                attn_fig.canvas.flush_events()
         print(f"\n✅ Epoch {epoch}/{epochs} | Train Loss: {avg_loss:.4f} "
               f"| Train Acc: {train_acc:.4f} | Val Acc: {val_acc:.4f}\n")
 
@@ -173,6 +234,9 @@ def main():
             ckpt_path = os.path.join(ckpt_dir, f"best_epoch{epoch:03d}_acc{val_acc:.4f}.pth")
             torch.save(model.state_dict(), ckpt_path)
             print(f"→ New best model saved to {ckpt_path}")
+
+    plt.ioff()
+    plt.show()
 
 if __name__ == "__main__":
     freeze_support()
