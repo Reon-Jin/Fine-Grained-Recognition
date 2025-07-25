@@ -19,7 +19,7 @@ class SR_GNN(nn.Module):
         self.base_channels = self.base.feature_info[-1]['num_chs']
         self.rois = getROIS(resolution=ROIS_resolution, gridSize=ROIS_grid_size, minSize=minSize)
         self.roi_pool = RoiPooling(pool_size, self.rois)
-        feat_dim = self.base_channels  # ⚠️ 修复点：最终特征维度为 C 而不是 C*H*W
+        feat_dim = self.base_channels
         self.attention = SelfAttention(self.base_channels)
         self.fc = nn.Linear(feat_dim, nb_classes)
 
