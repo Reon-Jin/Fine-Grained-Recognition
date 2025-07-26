@@ -1,0 +1,5 @@
+torch
+torchvision
+efficientnet_pytorch
+tqdm
+matplotlib
