@@ -28,7 +28,20 @@ def visualize(model_path, image_folder, backbone='resnet50', nb_classes=1000):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = CBAMResNet(backbone=backbone, nb_classes=nb_classes)
     state_dict = torch.load(model_path, map_location=device)
-    model.load_state_dict(state_dict, strict=False)
+
+    # ---- Validate checkpoint ----
+    keys = list(state_dict.keys())
+    has_cbam = any('cbam.sa' in k or 'cbam.ca' in k for k in keys)
+    if not has_cbam:
+        raise ValueError(
+            f"Checkpoint '{model_path}' does not contain CBAM weights. "
+            "Load a checkpoint trained with CBAM to visualize attention correctly."
+        )
+
+    # Handle DataParallel checkpoints
+    state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+
+    model.load_state_dict(state_dict, strict=True)
     model.to(device)
     model.eval()
 
