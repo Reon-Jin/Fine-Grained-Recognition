@@ -11,3 +11,4 @@ parts/
 submission/
 /script/best_checkpoints
 /script/roi_vis
+/trained_model
