@@ -12,9 +12,9 @@ RUNS_DIR   = './runs'                      # logs / checkpoints
 IMAGE_SIZE   = 224
 BATCH_SIZE   = 32
 NUM_WORKERS  = 4
-
+NUM_CLASSES  = 20
 # ========= Model & Training =========
-NUM_CLASSES  = 100           # ⚠️  update after inspecting dataset
+NUM_CLASSES  = 20           # ⚠️  update after inspecting dataset
 EPOCHS       = 100
 LR           = 1e-3
 WEIGHT_DECAY = 1e-4
@@ -30,3 +30,5 @@ ATTENTION_THRESHOLD = 0.6      # keep top‑x% activation
 
 # ========= Misc =========
 SEED = 42
+MODEL1_CKPT = 'best_model1.pth'
+K = 1

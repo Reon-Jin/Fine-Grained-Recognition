@@ -1,43 +1,28 @@
+# model2.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision.models as models
 
 class ROIModel(nn.Module):
-    """Second‑stage classifier that focuses on high‑response regions."""
-    def __init__(self, num_classes: int, pretrained: bool = True):
+    def __init__(self, num_classes: int, in_channels: int = 1280):
         super().__init__()
-        if pretrained:
-            backbone = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
-        else:
-            backbone = models.resnet50()
+        # 轻量分类头：先用 1x1把通道压到512，再一个3x3细化，最后GAP+FC
+        self.head = nn.Sequential(
+            nn.Conv2d(in_channels, 512, kernel_size=1, bias=False),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
 
-        self.features = nn.Sequential(
-            backbone.conv1,
-            backbone.bn1,
-            backbone.relu,
-            backbone.maxpool,
-            backbone.layer1,
-            backbone.layer2,
-            backbone.layer3,
-            backbone.layer4,
+            nn.Conv2d(512, 128, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+
+            nn.AdaptiveAvgPool2d(1),
         )
-        self.avgpool = backbone.avgpool
-        self.fc      = nn.Linear(backbone.fc.in_features, num_classes)
+        self.fc = nn.Linear(128, num_classes)
 
-    def forward(self, x, attn_mask=None):
-        """Forward pass.
+    def forward(self, x):  # x: [B, 1280, 7, 7]
+        x = self.head(x)   # -> [B, 128, 1, 1]
+        x = x.flatten(1)   # -> [B, 128]
+        x = self.fc(x)     # -> [B, num_classes]
+        return x
 
-        Args:
-            x (Tensor): B×3×H×W image
-            attn_mask (Tensor|None): B×1×H×W mask, values in [0,1]
-        """
-        if attn_mask is not None:
-            # upsample mask to input size then apply residual emphasis
-            attn_mask = F.interpolate(attn_mask, size=x.shape[-2:], mode='bilinear', align_corners=False)
-            x = x * attn_mask + x  # residual so unmasked pixels still contribute
-
-        feats = self.features(x)
-        pooled = self.avgpool(feats)
-        logits = self.fc(torch.flatten(pooled, 1))
-        return logits

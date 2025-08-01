@@ -1,55 +1,48 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import torchvision.models as models
+from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
+from torchvision.models.efficientnet import SqueezeExcitation
+from config import NUM_CLASSES,K
 
 class BaseModel(nn.Module):
-    """First‑stage model that also exports a simple attention map."""
-    def __init__(self, num_classes: int, pretrained: bool = True):
+    def __init__(self):
         super().__init__()
-        # torchvision >= 0.15 uses weights enums
-        if pretrained:
-            backbone = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
-        else:
-            backbone = models.resnet50(weights=None)
+        # 从 Config 读取 Top-K、类别数
+        self.k = K
+        num_classes = NUM_CLASSES
 
-        self.features = nn.Sequential(
-            backbone.conv1,
-            backbone.bn1,
-            backbone.relu,
-            backbone.maxpool,
-            backbone.layer1,
-            backbone.layer2,
-            backbone.layer3,
-            backbone.layer4,
+        # 1) 加载预训练骨架，并替换分类头
+        self.backbone = efficientnet_b0(weights=EfficientNet_B0_Weights.IMAGENET1K_V1)
+        in_feats = self.backbone.classifier[1].in_features
+        self.backbone.classifier = nn.Sequential(
+            nn.Dropout(p=self.backbone.classifier[0].p),
+            nn.Linear(in_feats, num_classes)
         )
-        self.avgpool = backbone.avgpool
-        self.fc      = nn.Linear(backbone.fc.in_features, num_classes)
 
-    def forward(self, x, return_attention: bool = False):
-        feats = self.features(x)                  # B × C × H × W
-        if return_attention:
-            # channel‑wise mean as a surrogate CAM
-            attn = torch.mean(feats, dim=1, keepdim=True)  # B×1×H×W
-            attn = F.relu(attn)
-            attn = F.interpolate(attn, size=x.shape[-2:], mode='bilinear', align_corners=False)
-        pooled = self.avgpool(feats)
-        logits = self.fc(torch.flatten(pooled, 1))
-        if return_attention:
-            return logits, attn
-        return logits
+        # 2) 注册钩子，自动提取所有 SE 模块的通道注意力
+        self.att_weights = []
+        for m in self.backbone.features.modules():
+            if isinstance(m, SqueezeExcitation):
+                m.register_forward_hook(self._hook_se)
 
-class GCELoss(nn.Module):
-    """Generalized Cross‑Entropy Loss (q‑parameter)."""
-    def __init__(self, q: float = 0.7):
-        super().__init__()
-        self.q = q
+    def _hook_se(self, module, input, output):
+        # output: [B, C] 通道重标度权重
+        self.att_weights.append(output.detach())
 
-    def forward(self, logits, targets):
-        probs = F.softmax(logits, dim=1)
-        probs = probs.gather(1, targets.unsqueeze(1)).squeeze(1) + 1e-6
-        if self.q == 0:
-            loss = -torch.log(probs)
+    def forward(self, x, labels=None):
+        # 清空上次 attention
+        self.att_weights = []
+        logits = self.backbone(x)  # [B, NUM_CLASSES]
+
+        if labels is not None:
+            # Top-K 判断
+            topk_inds = logits.topk(self.k, dim=1).indices       # [B, K]
+            correct   = topk_inds.eq(labels.view(-1,1)).any(dim=1)  # [B]
+            return logits, correct.float(), self.att_weights
         else:
-            loss = (1. - probs ** self.q) / self.q
-        return torch.mean(loss)
+            return logits, self.att_weights
+
+def compute_topk_accuracy(logits, labels, k):
+    topk  = logits.topk(k, dim=1).indices       # [B, k]
+    corr  = topk.eq(labels.view(-1,1)).any(dim=1).float()
+    return corr.mean().item()
