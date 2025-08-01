@@ -1,21 +1,16 @@
-"""
-Stage-2 training (feature-level Co-Teaching)
--------------------------------------------
-* 预加载并冻结 EfficientNet-B0 (model1)
-* 钩出 backbone.features[-1] 的输出当作 feat_map
-* 两个 ROIModel (modelA / modelB) 在 feat_map 上做 Co-Teaching
+"""Stage‑2 training (feature‑level Co‑Teaching) ‑‑ SVM version
+--------------------------------------------------------------
+* Freeze EfficientNet‑B0 (model1) and cache its last feature map
+* Two CoTeachHead (modelA / modelB) output linear‑SVM margins
+* Loss uses multi‑class hinge (nn.MultiMarginLoss, reduction='none')
 """
 
 import os, random, numpy as np, torch
 from torch import optim
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from model2 import CoTeachHead
-headA = CoTeachHead(num_classes=400).cuda()
-headB = CoTeachHead(num_classes=400).cuda()
 
 from config import (
     SEED, DATA_DIR, BATCH_SIZE, IMAGE_SIZE, NUM_WORKERS,
@@ -23,27 +18,11 @@ from config import (
     NOISE_RATE, FORGET_END, RUNS_DIR
 )
 
-from model1 import BaseModel         # model1 = EfficientNet-B0 封装
-from model2 import ROIModel                   # 只接受 feat_map
+from model1 import BaseModel                 # EfficientNet‑B0 wrapper
+from model2 import CoTeachHead           # ← new head: feat extractor + linear SVM
 from utils.dataset import get_data_loaders
-from utils.noise_handler import NoiseHandler  # 提供 co_teaching_batch
-class GCELoss(nn.Module):
-    """
-    Generalized Cross Entropy (Zhang & Sabuncu, NIPS 2018)
-    q ∈ (0,1]，q→0 时退化为交叉熵
-    """
-    def __init__(self, q: float = 0.7):
-        super().__init__()
-        assert 0.0 <= q <= 1.0
-        self.q = q
+from utils.noise_handler import NoiseHandler  # provides co_teaching_batch
 
-    def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        # p(y|x) for correct class
-        p = F.softmax(logits, dim=1).clamp_min(1e-8)
-        p_y = p[torch.arange(logits.size(0), device=logits.device), target]
-        if self.q == 0.0:
-            return (-p_y.log()).mean()
-        return ((1.0 - p_y.pow(self.q)) / self.q).mean()
 # --------------------------------------------------------------------------- #
 # reproducibility
 # --------------------------------------------------------------------------- #
@@ -56,22 +35,23 @@ def set_seed(seed: int):
     torch.backends.cudnn.benchmark = False
 
 # --------------------------------------------------------------------------- #
-# linear forget-rate schedule
+# linear forget‑rate schedule
 # --------------------------------------------------------------------------- #
 def get_forget_rate(epoch: int) -> float:
     ramp = min(1.0, epoch / (EPOCHS * FORGET_END))
     return NOISE_RATE * ramp
 
 # --------------------------------------------------------------------------- #
-# 训练一个 epoch
+# train one epoch
 # --------------------------------------------------------------------------- #
 def train_one_epoch(
     model1, modelA, modelB,
-    loader, criterion,
+    loader,
     optimA, optimB,
-    device, epoch: int
+    device, epoch: int,
+    criterion
 ):
-    model1.eval()          # 冻结
+    model1.eval()          # frozen
     modelA.train(); modelB.train()
 
     total_loss, total_correct, n_samples = 0., 0, 0
@@ -82,30 +62,30 @@ def train_one_epoch(
         optimA.zero_grad(set_to_none=True)
         optimB.zero_grad(set_to_none=True)
 
-        # ---------- 1. 抓取 feat_map ----------
+        # ---------- 1. extract feat_map ----------
         with torch.no_grad():
-            _ = model1(imgs)         # 正向一次以触发钩子
-            feat_map = model1._cached_feat      # (B,C,H,W)
+            _ = model1(imgs)           # trigger hook
+            feat_map = model1._cached_feat
 
-        # ---------- 2. 双 ROIModel 前向 ----------
-        logitsA = modelA(feat_map.detach())
-        logitsB = modelB(feat_map.detach())
+        # ---------- 2. forward through two heads ----------
+        logitsA, _ = modelA(feat_map.detach())
+        logitsB, _ = modelB(feat_map.detach())
 
-        # ---------- 3. Co-Teaching ----------
+        # ---------- 3. Co‑Teaching ----------
         fr = get_forget_rate(epoch)
         idxA, idxB = NoiseHandler.co_teaching_batch(
             logitsA.detach(), logitsB.detach(), labels, fr
         )
 
-        lossA = criterion(logitsA[idxB], labels[idxB])
-        lossB = criterion(logitsB[idxA], labels[idxA])
-        loss  = lossA + lossB
+        lossA_vec = criterion(logitsA[idxB], labels[idxB])        # [k]
+        lossB_vec = criterion(logitsB[idxA], labels[idxA])
+        loss = lossA_vec.mean() + lossB_vec.mean()
         loss.backward()
         optimA.step(); optimB.step()
 
-        # ---------- 4. 统计 ----------
+        # ---------- 4. metrics ----------
         total_loss += loss.item() * imgs.size(0)
-        _, preds = torch.max(logitsA.detach(), 1)   # 任选 A 统计
+        _, preds = torch.max(logitsA.detach(), 1)   # use head A for accuracy
         total_correct += (preds == labels).sum().item()
         n_samples += imgs.size(0)
         pbar.set_postfix({
@@ -117,10 +97,10 @@ def train_one_epoch(
     return total_loss / n_samples, 100.*total_correct / n_samples
 
 # --------------------------------------------------------------------------- #
-# 验证
+# validation
 # --------------------------------------------------------------------------- #
 @torch.no_grad()
-def evaluate(model1, modelA, modelB, loader, criterion, device):
+def evaluate(model1, modelA, modelB, loader, device, criterion):
     model1.eval(); modelA.eval(); modelB.eval()
     total_loss, total_correct, n_samples = 0., 0, 0
 
@@ -128,10 +108,11 @@ def evaluate(model1, modelA, modelB, loader, criterion, device):
         imgs, labels = imgs.to(device), labels.to(device)
         _ = model1(imgs)
         feat_map = model1._cached_feat
-        logits = (modelA(feat_map) + modelB(feat_map)) / 2.0   # 集成
-        loss = criterion(logits, labels)
-
-        total_loss += loss.item() * imgs.size(0)
+        logitsA, _ = modelA(feat_map)
+        logitsB, _ = modelB(feat_map)
+        logits = (logitsA + logitsB) / 2.0
+        loss = criterion(logits, labels)   # reduction='none' → [B]
+        total_loss += loss.mean().item() * imgs.size(0)
         _, preds = torch.max(logits, 1)
         total_correct += (preds == labels).sum().item()
         n_samples += imgs.size(0)
@@ -139,14 +120,9 @@ def evaluate(model1, modelA, modelB, loader, criterion, device):
     return total_loss / n_samples, 100.*total_correct / n_samples
 
 # --------------------------------------------------------------------------- #
-# 注册钩子：抓 EfficientNet-B0 最后一个 features 子模块输出
+# register hook to grab EfficientNet‑B0 last feature
 # --------------------------------------------------------------------------- #
 def register_feature_hook(model1):
-    """
-    给 model1 注册 forward hook，把 backbone.features[-1] 的输出
-    存到 model1._cached_feat 里，供后续取用。
-    """
-    # 适配两种封装：直接有 .features 或者 .backbone.features
     if hasattr(model1, "features"):
         target_layer = model1.features[-1]
     else:
@@ -163,28 +139,28 @@ def main():
     set_seed(SEED)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # 数据
+    # data
     train_loader, val_loader, num_classes = get_data_loaders(
         DATA_DIR, BATCH_SIZE, IMAGE_SIZE, NUM_WORKERS
     )
     print(f"Dataset ready → {num_classes} classes")
 
-    # -------- 预加载并冻结 EfficientNet-B0 --------
+    # -------- backbone --------
     model1 = BaseModel().to(device)
     ckpt = torch.load(MODEL1_CKPT, map_location=device)
     state = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt
     model1.load_state_dict(state, strict=True)
     for p in model1.parameters():
         p.requires_grad = False
-    register_feature_hook(model1)                # 捕获 feat_map
+    register_feature_hook(model1)
     print("model1 loaded & frozen")
 
-    # -------- 两个 ROIModel (Co-Teaching) --------
-    modelA = CoTeachHead(num_classes=400).cuda()
-    modelB = CoTeachHead(num_classes=400).cuda()
+    # -------- Co‑Teaching heads --------
+    modelA = CoTeachHead(num_classes, in_channels=1280).to(device)
+    modelB = CoTeachHead(num_classes, in_channels=1280).to(device)
 
+    # hinge loss (multi‑class SVM)
     criterion = nn.MultiMarginLoss(p=1, margin=1.0, reduction="none")
-
     optimA = optim.AdamW(modelA.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     optimB = optim.AdamW(modelB.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     schA   = CosineAnnealingLR(optimA, T_max=EPOCHS, eta_min=1e-6)
@@ -196,10 +172,10 @@ def main():
     for epoch in range(1, EPOCHS + 1):
         train_loss, train_acc = train_one_epoch(
             model1, modelA, modelB, train_loader,
-            criterion, optimA, optimB, device, epoch
+            optimA, optimB, device, epoch, criterion
         )
         val_loss, val_acc = evaluate(
-            model1, modelA, modelB, val_loader, criterion, device
+            model1, modelA, modelB, val_loader, device, criterion
         )
 
         schA.step(); schB.step()
@@ -207,7 +183,7 @@ def main():
 
         if val_acc > best_acc:
             best_acc = val_acc
-            save_path = os.path.join(RUNS_DIR, "best_stage2_feat_coteach.pth")
+            save_path = os.path.join(RUNS_DIR, "best_stage2_feat_coteach_svm.pth")
             torch.save({
                 "epoch": epoch,
                 "modelA": modelA.state_dict(),
