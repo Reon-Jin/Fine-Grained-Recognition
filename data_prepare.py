@@ -1,100 +1,58 @@
 # data_prepare.py
 
-import os
-from typing import Tuple
-
 import torch
-from torchvision import datasets, transforms
-from torchvision.transforms import AutoAugment, AutoAugmentPolicy, RandAugment
 from torch.utils.data import DataLoader, random_split
-
+from torchvision.datasets import ImageFolder
+from torchvision.models.efficientnet import EfficientNet_B0_Weights
 from config import Config
 
 
-def get_train_transform(input_size: int, use_strong_aug: bool) -> transforms.Compose:
-    """Return data transform with or without strong augmentation."""
-    if use_strong_aug:
-        cfg = Config()
-        # 基础几何和颜色增强
-        aug_list = [
-            transforms.RandomResizedCrop(input_size, scale=(0.8, 1.0)),
-            transforms.RandomHorizontalFlip(),
-            transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.05),
-            transforms.RandomGrayscale(p=0.1),
-            AutoAugment(policy=AutoAugmentPolicy.IMAGENET),
-        ]
-        # 根据 config 决定是否加入 RandAugment
-        if getattr(cfg, 'USE_RANDAUGMENT', False):
-            aug_list.append(
-                RandAugment(num_ops=cfg.RANDAUG_N, magnitude=cfg.RANDAUG_M)
-            )
-        # 最后统一做 ToTensor 和 Normalize
-        aug_list += [
-            transforms.ToTensor(),
-            transforms.Normalize(mean=cfg.NORMALIZE_MEAN,
-                                 std=cfg.NORMALIZE_STD)
-        ]
-        return transforms.Compose(aug_list)
-    else:
-        # 简单增强流程
-        return transforms.Compose([
-            transforms.Resize((input_size, input_size)),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=Config.NORMALIZE_MEAN,
-                                 std=Config.NORMALIZE_STD)
-        ])
-
-
-def get_val_transform(input_size: int) -> transforms.Compose:
-    """Validation transform (no randomness)."""
-    return transforms.Compose([
-        transforms.Resize((input_size, input_size)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=Config.NORMALIZE_MEAN,
-                             std=Config.NORMALIZE_STD)
-    ])
-
-
-def prepare_dataloaders(config: Config, current_epoch: int = 0) -> Tuple[DataLoader, DataLoader, int]:
+def prepare_dataloaders():
     """
-    Create train/validation dataloaders with warm-up aware augmentation.
-    :param config: 全局配置
-    :param current_epoch: 用于判断是否跳过 warm-up 阶段
-    :return: train_loader, val_loader, num_classes
+    构建训练和验证 DataLoader。
+    使用 Config 中定义的：
+      - DATA_DIR: 数据根目录，子文件夹为类别
+      - VAL_SPLIT: 验证集比例
+      - SEED: 随机种子
+      - BATCH_SIZE: 批大小
+      - NUM_WORKERS: DataLoader 并行进程数
+    返回：
+      train_loader, val_loader, num_classes
     """
-    use_strong_aug   = current_epoch >= config.WARMUP_EPOCHS
-    train_transform  = get_train_transform(config.INPUT_SIZE, use_strong_aug)
-    val_transform    = get_val_transform(config.INPUT_SIZE)
 
-    # 加载数据集并切分
-    dataset   = datasets.ImageFolder(config.DATA_DIR)
-    val_size  = int(len(dataset) * 0.2)
-    train_size = len(dataset) - val_size
-    train_dataset, val_dataset = random_split(
+    # 1. 预训练权重自带的标准预处理
+    weights = EfficientNet_B0_Weights.IMAGENET1K_V1
+    transform = weights.transforms()
+
+    # 2. 加载整个数据集
+    dataset = ImageFolder(root=Config.DATA_DIR, transform=transform)
+    num_classes = len(dataset.classes)
+
+    # 3. 划分训练/验证集
+    total = len(dataset)
+    val_size = int(Config.VAL_SPLIT * total)
+    train_size = total - val_size
+    generator = torch.Generator().manual_seed(Config.SEED)
+    train_ds, val_ds = random_split(
         dataset,
         [train_size, val_size],
-        generator=torch.Generator().manual_seed(config.RANDOM_SEED),
+        generator=generator
     )
 
-    # 动态应用 transform
-    train_dataset.dataset.transform = train_transform
-    val_dataset.dataset.transform   = val_transform
-
-    # DataLoader
+    # 4. 构造 DataLoader
     train_loader = DataLoader(
-        train_dataset,
-        batch_size=config.BATCH_SIZE,
+        train_ds,
+        batch_size=Config.BATCH_SIZE,
         shuffle=True,
-        num_workers=config.NUM_WORKERS,
-        pin_memory=True,
+        num_workers=Config.NUM_WORKERS,
+        pin_memory=True
     )
     val_loader = DataLoader(
-        val_dataset,
-        batch_size=config.BATCH_SIZE,
+        val_ds,
+        batch_size=Config.BATCH_SIZE,
         shuffle=False,
-        num_workers=config.NUM_WORKERS,
-        pin_memory=True,
+        num_workers=Config.NUM_WORKERS,
+        pin_memory=True
     )
 
-    return train_loader, val_loader, len(dataset.classes)
+    return train_loader, val_loader, num_classes
