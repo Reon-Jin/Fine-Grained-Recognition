@@ -1,129 +1,209 @@
-# main.py
 
-import os
-# 禁用 symlink 警告
-os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
-# 让 transformers 只报 ERROR 级别
-os.environ["TRANSFORMERS_VERBOSITY"] = "error"
-# 直接关闭 HuggingFace Hub 的下载进度条
-os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
-import torch
-import numpy as np
-from torch import nn, optim
+"""Stage‑2 Training with Co‑Teaching
+-------------------------------------
+1. 预加载训练好的 BaseModel (model1) → 提供 attention mask
+2. 构建两个 ROIModel (model2_A / model2_B) 做 Co‑Teaching
+3. 仅优化 model2_A/B；model1 参数全冻结
+"""
+
+import os, random, numpy as np, torch
+from torch import optim
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 
-from config import Config
-from data_prepare import prepare_dataloaders
-from models.model2 import TransFGDeiT
-from visualize_attention import visualize_attention_patches  # 新可视化函数
+from config import (
+    SEED,
+    DATA_DIR,
+    BATCH_SIZE,
+    IMAGE_SIZE,
+    NUM_WORKERS,
+    MODEL1_CKPT,
+    EPOCHS,
+    LR,
+    WEIGHT_DECAY,
+    NOISE_RATE,
+    FORGET_END,
+    RUNS_DIR,
+)
 
-def log_config(cfg: Config, log_path: str):
-    with open(log_path, 'a') as f:
-        f.write("======= Experiment Configuration =======\n")
-        for attr in dir(cfg):
-            if not attr.startswith("__") and not callable(getattr(cfg, attr)):
-                f.write(f"{attr}: {getattr(cfg, attr)}\n")
-        f.write("========================================\n\n")
+from model1 import BaseModel, GCELoss
+from model2 import ROIModel
+from utils.dataset import get_data_loaders
+from utils.noise_handler import NoiseHandler  # static helper for co‑teaching
 
-def train():
-    cfg = Config()
-    train_loader, val_loader, num_classes = prepare_dataloaders(cfg)
-    model = TransFGDeiT(num_classes).to(cfg.DEVICE)
 
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(
-        model.parameters(),
-        lr=cfg.LEARNING_RATE,
-        weight_decay=cfg.WEIGHT_DECAY,
+# --------------------------------------------------------------------------- #
+# Utils
+# --------------------------------------------------------------------------- #
+def set_seed(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+def get_forget_rate(epoch: int) -> float:
+    """Linear ramp‑up of forget_rate until FORGET_END × EPOCHS"""
+    ramp = min(1.0, epoch / (EPOCHS * FORGET_END))
+    return NOISE_RATE * ramp
+
+
+# --------------------------------------------------------------------------- #
+# Train & Eval
+# --------------------------------------------------------------------------- #
+def train_one_epoch(
+    model1,
+    modelA,
+    modelB,
+    loader,
+    criterion,
+    optimA,
+    optimB,
+    device,
+    epoch: int,
+):
+    model1.eval()  # frozen
+    modelA.train()
+    modelB.train()
+
+    total_loss, total_correct, total_samples = 0.0, 0, 0
+    pbar = tqdm(loader, desc=f"Train {epoch}", ncols=120)
+
+    for imgs, labels in pbar:
+        imgs, labels = imgs.to(device), labels.to(device)
+
+        optimA.zero_grad(set_to_none=True)
+        optimB.zero_grad(set_to_none=True)
+
+        # 1. Attention from model1 (no grad)
+        with torch.no_grad():
+            _, attn = model1(imgs, return_attention=True)
+
+        # 2. Forward through two ROI models
+        logitsA = modelA(imgs, attn_mask=attn.detach())
+        logitsB = modelB(imgs, attn_mask=attn.detach())
+
+        # 3. Co‑Teaching sample selection
+        fr = get_forget_rate(epoch)
+        idxA, idxB = NoiseHandler.co_teaching_batch(
+            logitsA.detach(), logitsB.detach(), labels, fr
+        )
+
+        lossA = criterion(logitsA[idxB], labels[idxB])
+        lossB = criterion(logitsB[idxA], labels[idxA])
+        loss = lossA + lossB
+        loss.backward()
+        optimA.step()
+        optimB.step()
+
+        # stats
+        total_loss += loss.item() * imgs.size(0)
+        _, preds = torch.max(logitsA.detach(), 1)
+        total_correct += (preds == labels).sum().item()
+        total_samples += imgs.size(0)
+        pbar.set_postfix(
+            {
+                "loss": f"{total_loss/total_samples:.4f}",
+                "acc": f"{100*total_correct/total_samples:.2f}%",
+                "fr": fr,
+            }
+        )
+
+    return total_loss / total_samples, 100.0 * total_correct / total_samples
+
+
+@torch.no_grad()
+def evaluate(model1, modelA, modelB, loader, criterion, device):
+    model1.eval()
+    modelA.eval()
+    modelB.eval()
+
+    total_loss, total_correct, total_samples = 0.0, 0, 0
+    for imgs, labels in loader:
+        imgs, labels = imgs.to(device), labels.to(device)
+        _, attn = model1(imgs, return_attention=True)
+        logitsA = modelA(imgs, attn_mask=attn)
+        logitsB = modelB(imgs, attn_mask=attn)
+
+        # 取平均 logits 以提升稳定性
+        logits = (logitsA + logitsB) / 2.0
+        loss = criterion(logits, labels)
+
+        total_loss += loss.item() * imgs.size(0)
+        _, preds = torch.max(logits, 1)
+        total_correct += (preds == labels).sum().item()
+        total_samples += imgs.size(0)
+
+    return total_loss / total_samples, 100.0 * total_correct / total_samples
+
+
+# --------------------------------------------------------------------------- #
+# Main
+# --------------------------------------------------------------------------- #
+def main():
+    set_seed(SEED)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Data
+    train_loader, val_loader, num_classes = get_data_loaders(
+        DATA_DIR, BATCH_SIZE, IMAGE_SIZE, NUM_WORKERS
     )
-    scheduler = CosineAnnealingWarmRestarts(
-        optimizer,
-        T_0=cfg.T_EPOCHS,  # 第一次重启的周期长度（单位：epoch），例如 10
-        T_mult=2,  # 每次重启后周期乘以 2：10→20→40…
-        eta_min=cfg.MIN_LR  # 学习率衰减到的下限
-    )
+    print(f"Dataset ready √  classes={num_classes}")
+
+    # Load pretrained model1
+    model1 = BaseModel(num_classes).to(device)
+    ckpt = torch.load(MODEL1_CKPT, map_location=device)
+    state = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt
+    model1.load_state_dict(state, strict=True)
+    for p in model1.parameters():
+        p.requires_grad = False
+    print(f"Loaded model1 weights from → {MODEL1_CKPT}")
+
+    # Build two ROI models for Co‑Teaching
+    modelA = ROIModel(num_classes).to(device)
+    modelB = ROIModel(num_classes).to(device)
+
+    criterion = GCELoss(q=0.7)
+    optimA = optim.AdamW(modelA.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+    optimB = optim.AdamW(modelB.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+    schA = CosineAnnealingLR(optimA, T_max=EPOCHS, eta_min=1e-6)
+    schB = CosineAnnealingLR(optimB, T_max=EPOCHS, eta_min=1e-6)
 
     best_acc = 0.0
-    os.makedirs(cfg.MODEL_DIR, exist_ok=True)
-    log_path = os.path.join(cfg.MODEL_DIR, 'experiment_log.txt')
-    log_config(cfg, log_path)
+    os.makedirs(RUNS_DIR, exist_ok=True)
 
-    for epoch in range(cfg.EPOCHS):
-        # ——— 训练 ———
-        model.train()
-        running_loss = 0.0
-        running_acc  = 0
-        for inputs, labels in tqdm(train_loader, desc=f"Train {epoch+1}/{cfg.EPOCHS}", ncols=100):
-            inputs, labels = inputs.to(cfg.DEVICE), labels.to(cfg.DEVICE)
-            optimizer.zero_grad()
+    for epoch in range(1, EPOCHS + 1):
+        train_loss, train_acc = train_one_epoch(
+            model1, modelA, modelB, train_loader, criterion, optimA, optimB, device, epoch
+        )
+        val_loss, val_acc = evaluate(model1, modelA, modelB, val_loader, criterion, device)
 
-            logits, aux = model(inputs)
-            loss = criterion(logits, labels)
-            loss.backward()
-            optimizer.step()
+        schA.step()
+        schB.step()
 
-            preds = logits.argmax(dim=1)
-            running_loss += loss.item() * inputs.size(0)
-            running_acc  += (preds == labels).sum().item()
+        print(
+            f"[Val] Epoch {epoch}: loss={val_loss:.4f}  acc={val_acc:.2f}%  (best={best_acc:.2f}%)"
+        )
 
-        epoch_loss = running_loss / len(train_loader.dataset)
-        epoch_acc  = running_acc  / len(train_loader.dataset)
-
-        # ——— 验证 ———
-        model.eval()
-        val_loss = 0.0
-        val_acc  = 0.0
-        with torch.no_grad():
-            for inputs, labels in tqdm(val_loader, desc=f"Val   {epoch+1}/{cfg.EPOCHS}", ncols=100):
-                inputs, labels = inputs.to(cfg.DEVICE), labels.to(cfg.DEVICE)
-                logits, aux = model(inputs)
-                loss = criterion(logits, labels)
-
-                preds = logits.argmax(dim=1)
-                val_loss += loss.item() * inputs.size(0)
-                val_acc  += (preds == labels).sum().item()
-
-        val_loss /= len(val_loader.dataset)
-        val_acc  /= len(val_loader.dataset)
-
-        # ——— 学习率衰减 ———
-        scheduler.step()
-        current_lr = optimizer.param_groups[0]['lr']
-
-        # ——— 日志 ———
-        print(f"\nEpoch {epoch+1}/{cfg.EPOCHS} Summary:")
-        print(f"  Train Loss: {epoch_loss:.4f} | Train Acc: {epoch_acc:.4f}")
-        print(f"  Val   Loss: {val_loss:.4f} | Val   Acc: {val_acc:.4f}")
-        print(f"  LR: {current_lr:.6f}")
-
-        with open(log_path, 'a') as f:
-            f.write(f"Epoch {epoch+1}:\n")
-            f.write(f"  Train Loss: {epoch_loss:.4f} | Train Acc: {epoch_acc:.4f}\n")
-            f.write(f"  Val   Loss: {val_loss:.4f} | Val   Acc: {val_acc:.4f}\n")
-            f.write(f"  LR: {current_lr:.6f}\n\n")
-
-        # ——— 保存最优 ———
         if val_acc > best_acc:
             best_acc = val_acc
-            torch.save(model.state_dict(), os.path.join(cfg.MODEL_DIR, 'best_model.pth'))
-            print(f"↳ New best model saved: {best_acc:.4f}")
+            path = os.path.join(RUNS_DIR, "best_stage2_coteach.pth")
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "modelA": modelA.state_dict(),
+                    "modelB": modelB.state_dict(),
+                    "model1_ckpt": MODEL1_CKPT,
+                    "acc": best_acc,
+                },
+                path,
+            )
+            print(f"🏅  New best saved → {path}")
 
-        # ——— 可视化注意力 ———
-        if cfg.VISUALIZE_ATTENTION:
-            img_dir = cfg.ATTN_IMAGE_DIR
-            if os.path.isdir(img_dir):
-                img_paths = [
-                    os.path.join(img_dir, fn)
-                    for fn in sorted(os.listdir(img_dir))
-                    if fn.lower().endswith(('.jpg', '.jpeg', '.png'))
-                ]
-                visualize_attention_patches(model, img_paths, cfg.DEVICE)
-            else:
-                print(f"ATTN_IMAGE_DIR 不存在或不是有效目录：{img_dir}")
+    print(f"Training completed.  best val acc = {best_acc:.2f}%")
 
-    print("\nTraining completed!")
-    print(f"Best validation accuracy: {best_acc:.4f}")
 
-if __name__ == '__main__':
-    train()
+if __name__ == "__main__":
+    main()

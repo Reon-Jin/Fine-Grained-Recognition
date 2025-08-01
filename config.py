@@ -1,33 +1,32 @@
-import torch
+"""Project‑wide configuration file."""
 
-class Config:
-    # ——— 基本训练配置 ———
-    DATA_DIR        = 'data/mini'
-    INPUT_SIZE      = 224
-    BATCH_SIZE      = 32
-    LEARNING_RATE   = 2e-3
-    EPOCHS          = 25
-    T_EPOCHS        = 25
-    WARMUP_EPOCHS   = 5
-    MIN_LR          = 1e-5
-    WEIGHT_DECAY    = 1e-5
-    NUM_WORKERS     = 4
-    RANDOM_SEED     = 42
-    DEVICE          = 'cuda' if torch.cuda.is_available() else 'cpu'
-    MODEL_DIR       = 'trained_model/mini_14'
+import os
 
-    # ——— 可视化 & 归一化 ———
-    VISUALIZE_ATTENTION = True
-    ATTN_IMAGE_DIR      = "data/vis"
-    ATTN_VIS_SAMPLES    = 3
-    NORMALIZE_MEAN      = [0.485, 0.456, 0.406]
-    NORMALIZE_STD       = [0.229, 0.224, 0.225]
+# ========= Paths =========
+DATA_DIR   = os.getenv('DATA_DIR', './data')  # raw data root containing sub‑folders per class
+TRAIN_DIR  = os.path.join(DATA_DIR, 'train')
+VAL_DIR    = os.path.join(DATA_DIR, 'val')
+RUNS_DIR   = './runs'                      # logs / checkpoints
 
-    # ——— 数据增强 ———
-    USE_RANDAUGMENT = True
-    RANDAUG_N       = 3
-    RANDAUG_M       = 12
+# ========= Dataset & Loader =========
+IMAGE_SIZE   = 224
+BATCH_SIZE   = 32
+NUM_WORKERS  = 4
 
-    # ——— TransFG 部件选择 ———
-    NUM_PARTS    = 4      # 选 top-k patches
-    PART_DROPOUT = 0.1    # 部件特征融合后的 dropout
+# ========= Model & Training =========
+NUM_CLASSES  = 100           # ⚠️  update after inspecting dataset
+EPOCHS       = 100
+LR           = 1e-3
+WEIGHT_DECAY = 1e-4
+TOP_K        = 3             # for first‑stage evaluation
+
+# ========= Co‑Teaching =========
+USE_CO_TEACHING = True
+NOISE_RATE      = 0.4          # estimated noisy label proportion
+FORGET_END      = 0.6          # ramp‑up end point as fraction of epochs
+
+# ========= Attention / ROI =========
+ATTENTION_THRESHOLD = 0.6      # keep top‑x% activation
+
+# ========= Misc =========
+SEED = 42
