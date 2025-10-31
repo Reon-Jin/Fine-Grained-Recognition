@@ -179,7 +179,6 @@ def build_logger(params):
     logger.msg(f'Result Path: {result_dir}')
     return logger, result_dir
 
-
 def build_model_optim_scheduler(params, device, build_scheduler=True):
     assert not params.dataset.startswith('cifar')
     n_classes = params.n_classes
@@ -215,26 +214,6 @@ def build_lr_plan(params, factor=10, decay='linear'):
         elif decay == 'cosine':
             lr_plan[i] = 0.5 * params.lr * (1 + math.cos(
                 (i - params.warmup_epochs + 1) * math.pi / (params.epochs - params.warmup_epochs + 1)))  # cosine decay
-        elif decay == 'step':
-            if params.warmup_epochs <= i < params.warmup_epochs + 10:
-                lr_plan[i] = params.lr * 0.1
-            elif params.warmup_epochs + 10 <= i < params.warmup_epochs + 20:
-                lr_plan[i] = params.lr * 0.01
-            elif params.warmup_epochs + 20 <= i < params.warmup_epochs + 10:
-                lr_plan[i] = params.lr * 0.001
-            else:
-                lr_plan[i] = params.lr * 0.0001
-        elif decay == 'step2':
-            if params.warmup_epochs <= i < params.warmup_epochs + 5:
-                lr_plan[i] = params.lr * 0.1
-            elif params.warmup_epochs + 5 <= i < params.warmup_epochs + 10:
-                lr_plan[i] = params.lr * 0.01
-            elif params.warmup_epochs + 10 <= i < params.warmup_epochs + 15:
-                lr_plan[i] = params.lr * 0.001
-            else:
-                lr_plan[i] = params.lr * 0.0001
-        else:
-            raise AssertionError(f'lr decay method: {decay} is not implemented yet.')
     return lr_plan
 
 
@@ -345,9 +324,6 @@ def main(cfg, device):
 
                 else:
                     pbar.set_description(f'ROBUST TRAINING (lr={curr_lr:.3e})')
-
-                    # strong aug, "NeurIPS 2020 - Unsupervised Data Augmentation for Consistency Training"
-                    probs_s = logits_s.softmax(dim=1)
                     probs_w = logits_w.softmax(dim=1)
                     with torch.no_grad():
                         mean_pred_prob_dist = (probs + probs_w + given_labels) / 3
@@ -355,61 +331,32 @@ def main(cfg, device):
                         flattened_target_s = (mean_pred_prob_dist * cfg.temperature).softmax(dim=1)
 
                     # classification loss
-                    loss_clean = 0.5 * cross_entropy(logits, given_labels, reduction='none') + 0.5 * cross_entropy(
-                        logits_w, given_labels, reduction='none')
+                    loss_clean = 0.5 * cross_entropy(logits, given_labels, reduction='none') + 0.5 * cross_entropy(logits_w, given_labels, reduction='none')
                     loss_idn = cross_entropy(logits_s, sharpened_target_s, reduction='none')
                     loss_ood = cross_entropy(logits_s, flattened_target_s, reduction='none') * cfg.beta
 
                     # entropy loss
-                    loss_entropy = 0.5 * entropy_loss(logits, reduction='none') + 0.5 * entropy_loss(logits_w,
-                                                                                                     reduction='none')
+                    loss_entropy = 0.5 * entropy_loss(logits, reduction='none') + 0.5 * entropy_loss(logits_w,reduction='none')
                     loss_clean += loss_entropy * cfg.alpha
-
                     # consistency loss
                     loss_cons = symmetric_kl_div(probs, probs_w)
-
-                    type_target = torch.nn.functional.one_hot(type_prob.max(dim=1)[1], 3)
-                    if_clean = type_target[:, 0]
-                    if_idn = type_target[:, 1]
-                    if_ood = type_target[:, 2]
-                    if cfg.weighting == 'soft':
-                        # soft seletcion / weighting
-                        loss_cls = loss_clean * clean_pred_prob + loss_idn * idn_pred_prob + loss_ood * ood_pred_prob
-                        if cfg.neg_cons:
-                            loss_cons = loss_cons * (clean_pred_prob + idn_pred_prob - ood_pred_prob)
-                        else:
-                            loss_cons = loss_cons * (clean_pred_prob + idn_pred_prob)
-                        loss_cons = loss_cons.mean()
+                    loss_cls = loss_clean * clean_pred_prob + loss_idn * idn_pred_prob + loss_ood * ood_pred_prob
+                    if cfg.neg_cons:
+                        loss_cons = loss_cons * (clean_pred_prob + idn_pred_prob - ood_pred_prob)
                     else:
-                        # hard seletcion / weighting
-                        loss_cls = loss_clean * if_clean + loss_idn + if_idn + loss_ood * if_ood
-                        if cfg.neg_cons:
-                            loss_cons = loss_cons * if_clean + loss_cons * if_idn - loss_cons * if_ood
-                            loss_cons = loss_cons.mean()
-                        else:
-                            loss_cons = loss_cons * if_clean + loss_cons * if_idn
-                            n_clean, n_idn = torch.nonzero(if_clean, as_tuple=False).shape[0], \
-                                torch.nonzero(if_idn, as_tuple=False).shape[0]
-                            loss_cons = loss_cons.sum() / (n_clean + n_idn) if n_clean + n_idn > 0 else 0
+                        loss_cons = loss_cons * (clean_pred_prob + idn_pred_prob)
+                    loss_cons = loss_cons.mean()
+
                     loss_cls = loss_cls.mean()
 
-                    # auxiliary loss
-                    with torch.no_grad():
-                        clean_probs = (1 - js_div(probs, given_labels))
-                        ood_probs = js_div(probs, probs_w) * cfg.eta + entropy(probs) / entropy_normalize_factor * (
-                                1 - cfg.eta)
-                    loss_aux_clean = aux_loss_func(clean_pred_prob, clean_probs)
-                    loss_aux_ood = aux_loss_func(ood_pred_prob, ood_probs)
-                    loss_aux = loss_aux_clean + loss_aux_ood
-
-                    loss = loss_cls + cfg.gamma * loss_aux + cfg.omega * loss_cons
+                    loss = loss_cls + cfg.omega * loss_cons
 
             scaler.scale(loss).backward()
 
             if (it + 1) % iters_to_accumulate == 0:
                 try:
                     scaler.step(optimizer)
-                except RuntimeError:  # in case of "RuntimeError: Function 'CudnnBatchNormBackward' returned nan values in its 0th output."
+                except RuntimeError:
                     logger.msg('Runtime Error occured! Have unscaled losses and clipped grads before optimizing!')
                     scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=2, norm_type=2.0)
@@ -440,10 +387,8 @@ def main(cfg, device):
             best_epoch = epoch + 1
             if cfg.save_model:
                 torch.save(net.state_dict(), f'{result_dir}/best_epoch.pth')
-                # torch.save(net, f'{result_dir}/best_model.pth')
         if cfg.save_model:
             torch.save(net.state_dict(), f"{result_dir}/epoch_{epoch+1}.pth")
-        # logging this epoch
         runtime = time.time() - start_time
         logger.info(f'epoch: {epoch + 1:>3d} | '
                     f'train loss: {train_loss.avg:>6.4f} | '
@@ -479,7 +424,6 @@ if __name__ == '__main__':
         # loss 权重
         alpha = 1.0  # entropy loss
         beta = 1.0  # ood classification loss
-        gamma = 1.0  # auxiliary loss
         omega = 1.0  # consistency loss
 
         loss_func_aux = "mae"
