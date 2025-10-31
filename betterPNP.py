@@ -28,7 +28,7 @@ if not hasattr(np, "int"):
 
 LOG_FREQ = 1
 
-seed = 3407
+seed = 218
 random.seed(seed)
 np.random.seed(seed)
 torch.manual_seed(seed)
@@ -179,6 +179,7 @@ def build_logger(params):
     logger.msg(f'Result Path: {result_dir}')
     return logger, result_dir
 
+
 def build_model_optim_scheduler(params, device, build_scheduler=True):
     assert not params.dataset.startswith('cifar')
     n_classes = params.n_classes
@@ -214,6 +215,8 @@ def build_lr_plan(params, factor=10, decay='linear'):
         elif decay == 'cosine':
             lr_plan[i] = 0.5 * params.lr * (1 + math.cos(
                 (i - params.warmup_epochs + 1) * math.pi / (params.epochs - params.warmup_epochs + 1)))  # cosine decay
+        else:
+            raise AssertionError(f'lr decay method: {decay} is not implemented yet.')
     return lr_plan
 
 
@@ -241,6 +244,8 @@ def wrapup_training(result_dir, best_accuracy):
             f.write(f"mean1: {stats['mean1']:.4f}, std2: {stats['std1']:.4f}\n")
             f.write(f"mean2: {stats['mean2']:.4f}, std2: {stats['std2']:.4f}\n")
     os.rename(result_dir, f'{result_dir}-bestAcc_{best_accuracy:.4f}')
+
+
 
 def main(cfg, device):
     init_seeds(0)
@@ -324,6 +329,9 @@ def main(cfg, device):
 
                 else:
                     pbar.set_description(f'ROBUST TRAINING (lr={curr_lr:.3e})')
+
+                    # strong aug, "NeurIPS 2020 - Unsupervised Data Augmentation for Consistency Training"
+                    probs_s = logits_s.softmax(dim=1)
                     probs_w = logits_w.softmax(dim=1)
                     with torch.no_grad():
                         mean_pred_prob_dist = (probs + probs_w + given_labels) / 3
@@ -331,15 +339,19 @@ def main(cfg, device):
                         flattened_target_s = (mean_pred_prob_dist * cfg.temperature).softmax(dim=1)
 
                     # classification loss
-                    loss_clean = 0.5 * cross_entropy(logits, given_labels, reduction='none') + 0.5 * cross_entropy(logits_w, given_labels, reduction='none')
+                    loss_clean = 0.5 * cross_entropy(logits, given_labels, reduction='none') + 0.5 * cross_entropy(
+                        logits_w, given_labels, reduction='none')
                     loss_idn = cross_entropy(logits_s, sharpened_target_s, reduction='none')
                     loss_ood = cross_entropy(logits_s, flattened_target_s, reduction='none') * cfg.beta
 
                     # entropy loss
-                    loss_entropy = 0.5 * entropy_loss(logits, reduction='none') + 0.5 * entropy_loss(logits_w,reduction='none')
+                    loss_entropy = 0.5 * entropy_loss(logits, reduction='none') + 0.5 * entropy_loss(logits_w,
+                                                                                                     reduction='none')
                     loss_clean += loss_entropy * cfg.alpha
+
                     # consistency loss
                     loss_cons = symmetric_kl_div(probs, probs_w)
+
                     loss_cls = loss_clean * clean_pred_prob + loss_idn * idn_pred_prob + loss_ood * ood_pred_prob
                     if cfg.neg_cons:
                         loss_cons = loss_cons * (clean_pred_prob + idn_pred_prob - ood_pred_prob)
@@ -348,15 +360,32 @@ def main(cfg, device):
                     loss_cons = loss_cons.mean()
 
                     loss_cls = loss_cls.mean()
+                    with torch.no_grad():
+                        # 计算 clean 和 ood 的伪标签
+                        clean_probs = (1 - js_div(probs, given_labels))  # clean 图像的伪标签
+                        ood_probs = js_div(probs, probs_w) * cfg.eta + entropy(probs) / entropy_normalize_factor * (
+                                    1 - cfg.eta)  # ood 图像的伪标签
 
-                    loss = loss_cls + cfg.omega * loss_cons
+                        # 计算 id 图像的伪标签
+                        id_probs = torch.abs(probs.argmax(dim=1) - given_labels)  # 计算模型预测与真实标签的差异
+                        id_probs = id_probs.float() / id_probs.max()  # 归一化，使得 id 图像的伪标签较大
+
+                        # 计算 loss
+                        loss_aux_clean = aux_loss_func(clean_pred_prob, clean_probs)
+                        loss_aux_ood = aux_loss_func(ood_pred_prob, ood_probs)
+                        loss_aux_id = aux_loss_func(idn_pred_prob, id_probs)  # 对 id 图像进行专门的辅助损失计算
+
+                        # 合并所有损失
+                        loss_aux = loss_aux_clean + loss_aux_ood + loss_aux_id  # lambda_id 为 id 图像损失的加权系数，可以根据实际情况调整
+
+                    loss = loss_cls + cfg.gamma * loss_aux + cfg.omega * loss_cons
 
             scaler.scale(loss).backward()
 
             if (it + 1) % iters_to_accumulate == 0:
                 try:
                     scaler.step(optimizer)
-                except RuntimeError:
+                except RuntimeError:  # in case of "RuntimeError: Function 'CudnnBatchNormBackward' returned nan values in its 0th output."
                     logger.msg('Runtime Error occured! Have unscaled losses and clipped grads before optimizing!')
                     scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=2, norm_type=2.0)
@@ -387,8 +416,10 @@ def main(cfg, device):
             best_epoch = epoch + 1
             if cfg.save_model:
                 torch.save(net.state_dict(), f'{result_dir}/best_epoch.pth')
+                # torch.save(net, f'{result_dir}/best_model.pth')
         if cfg.save_model:
             torch.save(net.state_dict(), f"{result_dir}/epoch_{epoch+1}.pth")
+        # logging this epoch
         runtime = time.time() - start_time
         logger.info(f'epoch: {epoch + 1:>3d} | '
                     f'train loss: {train_loss.avg:>6.4f} | '
@@ -424,7 +455,9 @@ if __name__ == '__main__':
         # loss 权重
         alpha = 1.0  # entropy loss
         beta = 1.0  # ood classification loss
+        gamma = 1.2  # auxiliary loss
         omega = 1.0  # consistency loss
+
 
         loss_func_aux = "mae"
         weighting = "soft"
@@ -439,7 +472,7 @@ if __name__ == '__main__':
 
         # 日志
         project = "webfg400"
-        log = "3heads-ECA-3407"
+        log = "3heads-ECA-newaux"
         log_freq = LOG_FREQ
 
         # consistency 超参
