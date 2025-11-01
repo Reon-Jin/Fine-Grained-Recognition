@@ -361,22 +361,35 @@ def main(cfg, device):
 
                     loss_cls = loss_cls.mean()
                     with torch.no_grad():
-                        # 计算 clean 和 ood 的伪标签
-                        clean_probs = (1 - js_div(probs, given_labels))  # clean 图像的伪标签
-                        ood_probs = js_div(probs, probs_w) * cfg.eta + entropy(probs) / entropy_normalize_factor * (
-                                    1 - cfg.eta)  # ood 图像的伪标签
+                        # ---------- 1. clean score ----------
+                        # 越接近给定标签，越像干净样本
+                        clean_score = 1 - js_div(probs, given_labels)  # (N,)
 
-                        # 计算 id 图像的伪标签
-                        id_probs = torch.abs(probs.argmax(dim=1) - given_labels)  # 计算模型预测与真实标签的差异
-                        id_probs = id_probs.float() / id_probs.max()  # 归一化，使得 id 图像的伪标签较大
+                        # ---------- 2. ood score ----------
+                        # 不稳定 + 高熵 = 越可能是 OOD
+                        ood_score = js_div(probs, probs_w) * 0.5 + entropy(probs) / entropy_normalize_factor * 0.5  # (N,)
 
-                        # 计算 loss
-                        loss_aux_clean = aux_loss_func(clean_pred_prob, clean_probs)
-                        loss_aux_ood = aux_loss_func(ood_pred_prob, ood_probs)
-                        loss_aux_id = aux_loss_func(idn_pred_prob, id_probs)  # 对 id 图像进行专门的辅助损失计算
+                        # ---------- 3. id score ----------
+                        # 高置信但和提供的标签不一致 => 更可能是 ID 噪声（标签错类）
+                        pred_conf, pred_class = probs.max(dim=1)  # (N,), (N,)
+                        true_class = given_labels.argmax(dim=1)  # (N,)
+                        mismatch = (pred_class != true_class).float()  # (N,)
+                        id_score = pred_conf * mismatch  # (N,)
 
-                        # 合并所有损失
-                        loss_aux = loss_aux_clean + loss_aux_ood + loss_aux_id  # lambda_id 为 id 图像损失的加权系数，可以根据实际情况调整
+                        # ---------- 4. 组合成 [clean, id, ood] ----------
+                        # 堆叠 -> (N,3)
+                        pseudo_tri = torch.stack([clean_score, id_score, ood_score], dim=1)
+
+                        # 避免全零导致除零
+                        pseudo_tri = pseudo_tri + 1e-6
+
+                        # 归一化成类似概率分布（每个样本一行，和为1）
+                        pseudo_tri = pseudo_tri / pseudo_tri.sum(dim=1, keepdim=True)  # (N,3)
+
+                    # ---------- 5. 用这个3维伪标签来监督 type_prob ----------
+                    # type_prob 是你网络里 output['prob'].softmax(dim=1)，也是 (N,3)
+                    # 我们直接用 L1 / MSE 约束两者逼近
+                    loss_aux = aux_loss_func(type_prob, pseudo_tri)
 
                     loss = loss_cls + cfg.gamma * loss_aux + cfg.omega * loss_cons
 
@@ -455,7 +468,7 @@ if __name__ == '__main__':
         # loss 权重
         alpha = 1.0  # entropy loss
         beta = 1.0  # ood classification loss
-        gamma = 1.2  # auxiliary loss
+        gamma = 1.0  # auxiliary loss
         omega = 1.0  # consistency loss
 
 
